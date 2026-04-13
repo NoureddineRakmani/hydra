@@ -47,6 +47,8 @@ export const MAIN_LOOP_INTERVAL = 2000;
 
 export const DEFAULT_ACHIEVEMENT_SOUND_VOLUME = 0.15;
 
+export const WINDOW_BACKGROUND_COLOR = "#00000000";
+
 export const DECKY_PLUGINS_LOCATION = path.join(
   SystemPath.getPath("home"),
   "homebrew",
