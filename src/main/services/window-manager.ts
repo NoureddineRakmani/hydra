@@ -24,7 +24,7 @@ import type {
   UserPreferences,
 } from "@types";
 import { AuthPage, generateAchievementCustomNotificationTest } from "@shared";
-import { isStaging } from "@main/constants";
+import { isStaging, WINDOW_BACKGROUND_COLOR } from "@main/constants";
 import { logger } from "./logger";
 
 export class WindowManager {
@@ -40,7 +40,7 @@ export class WindowManager {
       height: 860,
       minWidth: 1024,
       minHeight: 860,
-      backgroundColor: "#1c1c1c",
+      backgroundColor: WINDOW_BACKGROUND_COLOR,
       titleBarStyle: process.platform === "linux" ? "default" : "hidden",
       icon,
       trafficLightPosition: { x: 16, y: 16 },
@@ -267,7 +267,7 @@ export class WindowManager {
       const authWindow = new BrowserWindow({
         width: 600,
         height: 640,
-        backgroundColor: "#1c1c1c",
+        backgroundColor: WINDOW_BACKGROUND_COLOR,
         parent: this.mainWindow,
         modal: true,
         show: false,
@@ -473,7 +473,7 @@ export class WindowManager {
         height: 720,
         minWidth: 600,
         minHeight: 540,
-        backgroundColor: "#1c1c1c",
+        backgroundColor: WINDOW_BACKGROUND_COLOR,
         titleBarStyle: process.platform === "linux" ? "default" : "hidden",
         icon,
         trafficLightPosition: { x: 16, y: 16 },
@@ -556,7 +556,7 @@ export class WindowManager {
       minimizable: false,
       fullscreenable: false,
       frame: false,
-      backgroundColor: "#1c1c1c",
+      backgroundColor: WINDOW_BACKGROUND_COLOR,
       icon,
       skipTaskbar: false,
       webPreferences: {
