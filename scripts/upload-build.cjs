@@ -8,6 +8,9 @@ if (!process.env.BUILD_WEBHOOK_URL) {
   process.exit(0);
 }
 
+const flavor = process.env.BUILD_FLAVOR || "staging";
+const isProduction = flavor === "production";
+
 const s3 = new S3Client({
   region: "auto",
   endpoint: process.env.S3_ENDPOINT,
@@ -30,7 +33,7 @@ fs.readdir(dist, async (err, files) => {
       .filter((file) => extensionsToUpload.includes(path.extname(file)))
       .map(async (file) => {
         console.log(`⌛️ Uploading ${file}...`);
-        const fileName = `${new Date().getTime()}-${file}`;
+        const fileName = `${flavor}-${new Date().getTime()}-${file}`;
 
         const command = new PutObjectCommand({
           Bucket: process.env.S3_BUILDS_BUCKET_NAME,
@@ -56,10 +59,24 @@ fs.readdir(dist, async (err, files) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        upload,
-        branchName: process.env.BRANCH_NAME,
-        version: packageJson.version,
-        githubActor: process.env.GITHUB_ACTOR,
+        username: "Hydra Builds",
+        embeds: [
+          {
+            description: process.env.BRANCH_NAME,
+            color: isProduction ? 5763719 : 5814783,
+            title: `🔥 Nova build do Hydra [${flavor.toUpperCase()}] (versão ${packageJson.version})`,
+            fields: [
+              {
+                name: "",
+                value: `⬇️ Baixar\n[${upload.name}](${upload.url})`,
+              },
+            ],
+            footer: {
+              text: process.env.GITHUB_ACTOR,
+              icon_url: `https://avatars.githubusercontent.com/u/${process.env.GITHUB_ACTOR_ID}`,
+            },
+          },
+        ],
       }),
     });
   }

@@ -33,6 +33,8 @@ if (!gotTheLock) app.quit();
 
 if (process.platform !== "linux") {
   app.commandLine.appendSwitch("--no-sandbox");
+} else {
+  app.commandLine.appendSwitch("ozone-platform-hint", "auto");
 }
 
 i18n.init({
@@ -45,6 +47,20 @@ i18n.init({
 });
 
 const PROTOCOL = "hydralauncher";
+
+// Register the custom schemes as privileged so the renderer can fetch them
+// (supportFetchAPI) and use the results on a canvas without tainting it
+// (corsEnabled). Must run before the app is ready.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "local",
+    privileges: { supportFetchAPI: true, corsEnabled: true, stream: true },
+  },
+  {
+    scheme: "gradient",
+    privileges: { supportFetchAPI: true, corsEnabled: true },
+  },
+]);
 
 if (process.defaultApp) {
   if (process.argv.length >= 2) {

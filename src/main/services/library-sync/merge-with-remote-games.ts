@@ -4,6 +4,7 @@ import { gamesShopAssetsSublevel, gamesSublevel, levelKeys } from "@main/level";
 
 type ProfileGame = {
   id: string;
+  createdAt?: string | null;
   collectionIds?: string[];
   collectionId?: string | null;
   lastTimePlayed: Date | null;
@@ -13,6 +14,7 @@ type ProfileGame = {
   isPinned?: boolean;
   achievementCount: number;
   unlockedAchievementCount: number;
+  platform?: string | null;
 } & ShopAssets;
 
 const getLocalCollectionIds = (
@@ -40,8 +42,42 @@ const getLocalCollectionIds = (
   return legacyCollectionId ? [legacyCollectionId] : [];
 };
 
+const PAGE_SIZE = 100;
+
+const fetchAllGamesForShop = async (
+  params: Record<string, unknown> = {}
+): Promise<ProfileGame[]> => {
+  const all: ProfileGame[] = [];
+  let skip = 0;
+
+  for (;;) {
+    const page = await HydraApi.get<ProfileGame[]>("/profile/games", {
+      ...params,
+      take: PAGE_SIZE,
+      skip,
+    });
+
+    all.push(...page);
+
+    if (page.length < PAGE_SIZE) break;
+    skip += PAGE_SIZE;
+  }
+
+  return all;
+};
+
 export const mergeWithRemoteGames = async () => {
-  return HydraApi.get<ProfileGame[]>("/profile/games")
+  const fetchGames = Promise.all([
+    fetchAllGamesForShop(),
+    fetchAllGamesForShop({ shop: "launchbox" }).catch(
+      () => [] as ProfileGame[]
+    ),
+  ]).then(([defaultGames, classicsGames]) => [
+    ...defaultGames,
+    ...classicsGames,
+  ]);
+
+  return fetchGames
     .then(async (response) => {
       for (const game of response) {
         const gameKey = levelKeys.game(game.shop, game.objectId);
@@ -62,6 +98,9 @@ export const mergeWithRemoteGames = async () => {
         const mergedCollectionIds = hasRemoteCollectionField
           ? remoteCollectionIds
           : localCollectionIds;
+        const remoteAddedToLibraryAt = game.createdAt
+          ? new Date(game.createdAt)
+          : null;
 
         if (localGame) {
           const updatedLastTimePlayed =
@@ -80,6 +119,8 @@ export const mergeWithRemoteGames = async () => {
           await gamesSublevel.put(gameKey, {
             ...localGame,
             remoteId: game.id,
+            addedToLibraryAt:
+              localGame.addedToLibraryAt ?? remoteAddedToLibraryAt,
             lastTimePlayed: updatedLastTimePlayed,
             playTimeInMilliseconds: updatedPlayTime,
             favorite: game.isFavorite ?? localGame.favorite,
@@ -87,6 +128,7 @@ export const mergeWithRemoteGames = async () => {
             collectionIds: mergedCollectionIds,
             achievementCount: game.achievementCount,
             unlockedAchievementCount: game.unlockedAchievementCount,
+            platform: game.platform ?? localGame.platform,
           });
         } else {
           await gamesSublevel.put(gameKey, {
@@ -97,6 +139,7 @@ export const mergeWithRemoteGames = async () => {
             iconUrl: game.iconUrl,
             libraryHeroImageUrl: game.libraryHeroImageUrl,
             logoImageUrl: game.logoImageUrl,
+            addedToLibraryAt: remoteAddedToLibraryAt,
             lastTimePlayed: game.lastTimePlayed,
             playTimeInMilliseconds: game.playTimeInMilliseconds,
             hasManuallyUpdatedPlaytime: game.hasManuallyUpdatedPlaytime,
@@ -106,6 +149,7 @@ export const mergeWithRemoteGames = async () => {
             collectionIds: mergedCollectionIds,
             achievementCount: game.achievementCount,
             unlockedAchievementCount: game.unlockedAchievementCount,
+            platform: game.platform ?? null,
           });
         }
 

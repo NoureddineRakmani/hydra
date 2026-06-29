@@ -4,11 +4,13 @@ import type { Download, Game, Subscription } from "./level.types";
 import type { GameShop, UnlockedAchievement } from "./game.types";
 
 export type FriendRequestAction = "ACCEPTED" | "REFUSED" | "CANCEL";
+export * from "./download-contract";
 
 export type HydraCloudFeature =
   | "achievements"
   | "backup"
-  | "achievements-points";
+  | "achievements-points"
+  | "customization";
 
 export interface DiskUsage {
   free: number;
@@ -59,6 +61,8 @@ export interface ShopAssets {
 
 export type ShopDetails = SteamAppDetails & {
   objectId: string;
+  platform?: string;
+  skus?: string[];
 };
 
 export type ShopDetailsWithAssets = ShopDetails & {
@@ -138,6 +142,7 @@ export interface StartGameDownloadPayload {
   downloadPath: string;
   downloader: Downloader;
   automaticallyExtract: boolean;
+  automaticallyDeleteArchiveFiles: boolean;
   fileSize?: string | null;
   fileIndices?: number[];
   selectedFilesSize?: number | null;
@@ -147,15 +152,23 @@ export interface UserFriend {
   id: string;
   displayName: string;
   profileImageUrl: string | null;
+  backgroundImageUrl?: string | null;
   currentGame:
     | (ShopAssets & {
         sessionDurationInSeconds: number;
       })
     | null;
+  isOnline?: boolean;
 }
 
 export interface UserFriends {
   totalFriends: number;
+  friends: UserFriend[];
+}
+
+export interface ProfileFriends {
+  totalFriends: number;
+  onlineFriends: number;
   friends: UserFriend[];
 }
 
@@ -166,6 +179,11 @@ export interface UserBlocks {
 
 export interface FriendRequestSync {
   friendRequestCount: number;
+}
+
+export interface FriendPresenceSync {
+  friendId: string;
+  isOnline: boolean;
 }
 
 export interface NotificationSync {
@@ -238,6 +256,7 @@ export interface UserProfile {
     backupsPerGameLimit: number;
   };
   badges: string[];
+  badgesDetails?: { badge: string; unlockedAt: string }[];
   hasCompletedWrapped2025: boolean;
 }
 
@@ -264,6 +283,27 @@ export interface GameStats {
   reviewCount: number;
 }
 
+export interface GameReviewAnswer {
+  id: string;
+  answerHtml: string;
+  createdAt: string;
+  updatedAt: string;
+  upvotes: number;
+  downvotes: number;
+  isBlocked: boolean;
+  hasUpvoted: boolean;
+  hasDownvoted: boolean;
+  user: {
+    id: string;
+    displayName: string;
+    profileImageUrl: string | null;
+  };
+  translations: {
+    [key: string]: string;
+  };
+  detectedLanguage: string | null;
+}
+
 export interface GameReview {
   id: string;
   reviewHtml: string;
@@ -272,6 +312,8 @@ export interface GameReview {
   updatedAt: string;
   upvotes: number;
   downvotes: number;
+  answerCount: number;
+  answers: GameReviewAnswer[];
   isBlocked: boolean;
   hasUpvoted: boolean;
   hasDownvoted: boolean;
@@ -346,7 +388,9 @@ export type NotificationType =
   | "FRIEND_REQUEST_RECEIVED"
   | "FRIEND_REQUEST_ACCEPTED"
   | "BADGE_RECEIVED"
-  | "REVIEW_UPVOTE";
+  | "REVIEW_UPVOTE"
+  | "REVIEW_ANSWER"
+  | "REVIEW_ANSWER_UPVOTE";
 
 export type LocalNotificationType =
   | "EXTRACTION_COMPLETE"
@@ -427,6 +471,13 @@ export interface ComparedAchievements {
 
 export interface CatalogueSearchPayload {
   title: string;
+  sortBy:
+    | "popularity"
+    | "reviewScore"
+    | "alphabetical"
+    | "hydraScore"
+    | "releaseDate";
+  sortOrder: "asc" | "desc";
   downloadSourceFingerprints: string[];
   tags: number[];
   publishers: string[];
@@ -441,6 +492,8 @@ export interface CatalogueSearchPayload {
   )[];
   deckCompatibility: ("verified" | "playable" | "unsupported" | "unknown")[];
   releaseYear?: { gte?: number; lte?: number };
+  shops?: string[];
+  platforms?: string[];
 }
 
 export interface ProtonDBData {
@@ -466,6 +519,11 @@ export type CatalogueSearchResult = {
   protondbSupportBadges?: string[];
   deckCompatibility?: string | null;
   deckCompatibilities?: string[];
+  platform?: string;
+  alternateNames?: string[];
+  developers?: string[];
+  publishers?: string[];
+  skus?: string[];
 } & Pick<ShopAssets, "libraryImageUrl" | "downloadSources">;
 
 export type LibraryGame = Game &
@@ -500,3 +558,4 @@ export * from "./ludusavi.types";
 export * from "./how-long-to-beat.types";
 export * from "./level.types";
 export * from "./theme.types";
+export * from "./emulator.types";

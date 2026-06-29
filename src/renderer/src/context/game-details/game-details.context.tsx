@@ -27,7 +27,7 @@ import {
   GameDetailsContext,
   GameOptionsCategoryId,
 } from "./game-details.context.types";
-import { SteamContentDescriptor } from "@shared";
+import { getGameExecutableFilters, SteamContentDescriptor } from "@shared";
 
 export const gameDetailsContext = createContext<GameDetailsContext>({
   game: null,
@@ -45,12 +45,15 @@ export const gameDetailsContext = createContext<GameDetailsContext>({
   achievements: null,
   hasNSFWContentBlocked: false,
   lastDownloadedOption: null,
+  isTransferring: false,
+  transferProgress: 0,
   selectGameExecutable: async () => null,
   updateGame: async () => {},
   setShowGameOptionsModal: () => {},
   setGameOptionsInitialCategory: () => {},
   setShowRepacksModal: () => {},
   setHasNSFWContentBlocked: () => {},
+  cancelTransfer: () => {},
 });
 
 const { Provider } = gameDetailsContext;
@@ -78,6 +81,8 @@ export function GameDetailsContextProvider({
   const [game, setGame] = useState<LibraryGame | null>(null);
   const [hasNSFWContentBlocked, setHasNSFWContentBlocked] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const [isTransferring, setIsTransferring] = useState(false);
+  const [transferProgress, setTransferProgress] = useState(0);
 
   const [stats, setStats] = useState<GameStats | null>(null);
 
@@ -89,7 +94,7 @@ export function GameDetailsContextProvider({
     useState<GameOptionsCategoryId>("general");
   const [repacks, setRepacks] = useState<GameRepack[]>([]);
 
-  const { i18n } = useTranslation("game_details");
+  const { t, i18n } = useTranslation("game_details");
   const location = useLocation();
 
   const dispatch = useAppDispatch();
@@ -107,14 +112,7 @@ export function GameDetailsContextProvider({
       .then((result) => setGame(result));
   }, [shop, objectId]);
 
-  const isGameDownloading =
-    lastPacket?.gameId === game?.id && game?.download?.status === "active";
-
-  useEffect(() => {
-    updateGame();
-  }, [updateGame, isGameDownloading, lastPacket?.gameId]);
-
-  useEffect(() => {
+  const fetchGameDetails = useCallback(async () => {
     if (abortControllerRef.current) abortControllerRef.current.abort();
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
@@ -177,14 +175,80 @@ export function GameDetailsContextProvider({
         .catch(() => void 0);
     }
   }, [
-    updateGame,
-    dispatch,
+    i18n.language,
     objectId,
     shop,
-    i18n.language,
     userDetails,
-    userPreferences,
+    userPreferences?.disableNsfwAlert,
   ]);
+
+  const refreshGameDetails = useCallback(async () => {
+    await Promise.all([updateGame(), fetchGameDetails()]);
+  }, [fetchGameDetails, updateGame]);
+
+  const isGameDownloading =
+    lastPacket?.gameId === game?.id && game?.download?.status === "active";
+
+  useEffect(() => {
+    updateGame();
+  }, [updateGame, isGameDownloading, lastPacket?.gameId]);
+
+  // Listen for transfer events
+  useEffect(() => {
+    const onTransferProgress = (
+      _: unknown,
+      shop: string,
+      objectId: string,
+      progress: number
+    ) => {
+      if (shop === game?.shop && objectId === game?.objectId) {
+        setIsTransferring(progress >= 0 && progress < 1);
+        setTransferProgress(progress);
+      }
+    };
+
+    const onTransferComplete = (_: unknown, shop: string, objectId: string) => {
+      if (shop === game?.shop && objectId === game?.objectId) {
+        setIsTransferring(false);
+        setTransferProgress(0);
+        updateGame();
+      }
+    };
+
+    const onTransferCancelled = (
+      _: unknown,
+      shop: string,
+      objectId: string
+    ) => {
+      if (shop === game?.shop && objectId === game?.objectId) {
+        setIsTransferring(false);
+        setTransferProgress(0);
+      }
+    };
+
+    const onTransferError = (_: unknown, shop: string, objectId: string) => {
+      if (shop === game?.shop && objectId === game?.objectId) {
+        setIsTransferring(false);
+        setTransferProgress(0);
+      }
+    };
+
+    window.electron.on("on-game-transfer-progress", onTransferProgress);
+    window.electron.on("on-game-transfer-complete", onTransferComplete);
+    window.electron.on("on-game-transfer-cancelled", onTransferCancelled);
+    window.electron.on("on-game-transfer-error", onTransferError);
+
+    return () => {
+      window.electron.off("on-game-transfer-progress", onTransferProgress);
+      window.electron.off("on-game-transfer-complete", onTransferComplete);
+      window.electron.off("on-game-transfer-cancelled", onTransferCancelled);
+      window.electron.off("on-game-transfer-error", onTransferError);
+    };
+  }, [game]);
+
+  useEffect(() => {
+    fetchGameDetails().catch(() => {});
+  }, [fetchGameDetails]);
 
   useEffect(() => {
     setShopDetails(null);
@@ -235,13 +299,13 @@ export function GameDetailsContextProvider({
 
   useEffect(() => {
     const unsubscribe = window.electron.onLibraryBatchComplete(() => {
-      updateGame();
+      refreshGameDetails().catch(() => {});
     });
 
     return () => {
       unsubscribe();
     };
-  }, [updateGame]);
+  }, [refreshGameDetails]);
 
   useEffect(() => {
     const handler = (ev: Event) => {
@@ -356,16 +420,19 @@ export function GameDetailsContextProvider({
   const selectGameExecutable = async () => {
     const downloadsPath = await getDownloadsPath();
 
+    const filters = getGameExecutableFilters(
+      globalThis.window.electron.platform,
+      {
+        executable: t("game_executable"),
+        allFiles: t("all_files"),
+      }
+    );
+
     return window.electron
       .showOpenDialog({
         properties: ["openFile"],
         defaultPath: downloadsPath,
-        filters: [
-          {
-            name: "Game executable",
-            extensions: ["exe", "lnk"],
-          },
-        ],
+        filters,
       })
       .then(({ filePaths }) => {
         if (filePaths && filePaths.length > 0) {
@@ -374,6 +441,13 @@ export function GameDetailsContextProvider({
 
         return null;
       });
+  };
+
+  // Handlers for cancel
+  const cancelTransfer = () => {
+    window.electron.cancelGameTransfer?.(shop, objectId);
+    setIsTransferring(false);
+    setTransferProgress(0);
   };
 
   return (
@@ -394,12 +468,15 @@ export function GameDetailsContextProvider({
         achievements,
         hasNSFWContentBlocked,
         lastDownloadedOption: null,
+        isTransferring,
+        transferProgress,
         setHasNSFWContentBlocked,
         selectGameExecutable,
         updateGame,
         setShowRepacksModal,
         setShowGameOptionsModal,
         setGameOptionsInitialCategory,
+        cancelTransfer,
       }}
     >
       {children}

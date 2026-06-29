@@ -1,6 +1,20 @@
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Modal } from "@renderer/components";
+import {
+  formatBytes,
+  GAMEMODE_SITE_URL,
+  getGameExecutableFilters,
+  MANGOHUD_SITE_URL,
+} from "@shared";
+
 import type {
   CreateSteamShortcutOptions,
   Game,
@@ -18,6 +32,7 @@ import {
   useToast,
   useUserDetails,
 } from "@renderer/hooks";
+import { useSubscription } from "@renderer/hooks/use-subscription";
 import { RemoveGameFromLibraryModal } from "./remove-from-library-modal";
 import { ResetAchievementsModal } from "./reset-achievements-modal";
 import { ChangeGamePlaytimeModal } from "./change-game-playtime-modal";
@@ -25,6 +40,7 @@ import {
   AlertIcon,
   CloudIcon,
   DownloadIcon,
+  FileDirectoryIcon,
   GearIcon,
   ImageIcon,
 } from "@primer/octicons-react";
@@ -59,8 +75,6 @@ export function GameOptionsModal({
   onNavigateHome,
   initialCategory,
 }: Readonly<GameOptionsModalProps>) {
-  const MANGOHUD_SITE_URL = "https://mangohud.com";
-  const GAMEMODE_SITE_URL = "https://github.com/FeralInteractive/gamemode";
   const { t } = useTranslation("game_details");
 
   const { showSuccessToast, showErrorToast } = useToast();
@@ -74,7 +88,14 @@ export function GameOptionsModal({
     selectGameExecutable,
     achievements,
     shopDetails,
+    isTransferring,
   } = useContext(gameDetailsContext);
+
+  const [transferProgress, setTransferProgress] = useState(0);
+  const [drives, setDrives] = useState<any[]>([]);
+  const [transferSpeed, setTransferSpeed] = useState(0);
+  const [transferETA, setTransferETA] = useState(0);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showRemoveGameModal, setShowRemoveGameModal] = useState(false);
@@ -118,35 +139,39 @@ export function GameOptionsModal({
     isGameDeleting,
     cancelDownload,
   } = useDownload();
-
-  const { userDetails } = useUserDetails();
+  const { userDetails, hasActiveSubscription } = useUserDetails();
+  const { showHydraCloudModal } = useSubscription();
   const userPreferences = useAppSelector(
     (state) => state.userPreferences.value
   );
 
   const globalAutoRunGamemode = userPreferences?.autoRunGamemode === true;
   const globalAutoRunMangohud = userPreferences?.autoRunMangohud === true;
-
   const hasAchievements =
-    (achievements?.filter((achievement) => achievement.unlocked).length ?? 0) >
-    0;
-
+    (achievements?.filter((a) => a.unlocked).length ?? 0) > 0;
   const deleting = isGameDeleting(game.id);
-
   const { lastPacket } = useDownload();
-
   const isGameDownloading =
     game.download?.status === "active" && lastPacket?.gameId === game.id;
+
+  useEffect(() => {
+    if (visible) {
+      globalThis.window.electron
+        .getAvailableDrives?.()
+        .then(setDrives)
+        .catch((err) => console.error("Failed to fetch drives:", err));
+    }
+  }, [visible]);
 
   useEffect(() => {
     if (
       visible &&
       game.shop !== "custom" &&
-      window.electron.platform === "win32"
+      globalThis.window.electron.platform === "win32"
     ) {
       setLoadingSaveFolder(true);
       setSaveFolderPath(null);
-      window.electron
+      globalThis.window.electron
         .getGameSaveFolder(game.shop, game.objectId)
         .then(setSaveFolderPath)
         .catch(() => setSaveFolderPath(null))
@@ -157,71 +182,63 @@ export function GameOptionsModal({
   useEffect(() => {
     setGameTitle(game.title ?? "");
   }, [game.title]);
-
   useEffect(() => {
     setSelectedProtonPath(game.protonPath ?? "");
   }, [game.protonPath]);
-
   useEffect(() => {
     setAutoRunMangohud(game.autoRunMangohud === true);
   }, [game.autoRunMangohud]);
-
   useEffect(() => {
     setAutoRunGamemode(game.autoRunGamemode === true);
   }, [game.autoRunGamemode]);
 
   useEffect(() => {
-    if (!visible || window.electron.platform !== "linux") return;
-
-    window.electron
+    if (!visible || globalThis.window.electron.platform !== "linux") return;
+    globalThis.window.electron
       .getInstalledProtonVersions()
       .then(setProtonVersions)
       .catch(() => setProtonVersions([]));
   }, [visible]);
 
   useEffect(() => {
-    if (!visible || window.electron.platform !== "linux") {
+    if (!visible || globalThis.window.electron.platform !== "linux") {
       setDefaultWinePrefixPath(null);
       return;
     }
-
-    window.electron
+    globalThis.window.electron
       .getDefaultWinePrefixSelectionPath()
-      .then((defaultPath) => setDefaultWinePrefixPath(defaultPath))
+      .then(setDefaultWinePrefixPath)
       .catch(() => setDefaultWinePrefixPath(null));
   }, [visible]);
 
   useEffect(() => {
-    if (!visible || window.electron.platform !== "linux") {
+    if (!visible || globalThis.window.electron.platform !== "linux") {
       setGamemodeAvailable(false);
       return;
     }
-
-    window.electron
+    globalThis.window.electron
       .isGamemodeAvailable()
       .then(setGamemodeAvailable)
       .catch(() => setGamemodeAvailable(false));
   }, [visible]);
 
   useEffect(() => {
-    if (!visible || window.electron.platform !== "linux") {
+    if (!visible || globalThis.window.electron.platform !== "linux") {
       setMangohudAvailable(false);
       return;
     }
-
-    window.electron
+    globalThis.window.electron
       .isMangohudAvailable()
       .then(setMangohudAvailable)
       .catch(() => setMangohudAvailable(false));
   }, [visible]);
 
   useEffect(() => {
-    if (!visible || window.electron.platform !== "linux") {
+    if (!visible || globalThis.window.electron.platform !== "linux") {
       setWinetricksAvailable(false);
       return;
     }
-
-    window.electron
+    globalThis.window.electron
       .isWinetricksAvailable()
       .then(setWinetricksAvailable)
       .catch(() => setWinetricksAvailable(false));
@@ -229,16 +246,39 @@ export function GameOptionsModal({
 
   useEffect(() => {
     if (game.shop !== "custom") {
-      console.log(
-        "Checking Steam shortcut existence for",
-        window.electron.checkSteamShortcut(game.shop, game.objectId)
-      );
-      window.electron
+      globalThis.window.electron
         .checkSteamShortcut(game.shop, game.objectId)
         .then(setSteamShortcutExists)
         .catch(() => setSteamShortcutExists(false));
     }
   }, [game.shop, game.objectId]);
+
+  useEffect(() => {
+    const onProgress = (
+      _: unknown,
+      shop: string,
+      oid: string,
+      progress: number,
+      details?: any
+    ) => {
+      if (shop === game.shop && oid === game.objectId) {
+        setTransferProgress(progress);
+        if (details) {
+          setTransferSpeed(details.speed);
+          setTransferETA(details.eta);
+        }
+      }
+    };
+    (globalThis.window.electron as any).on(
+      "on-game-transfer-progress",
+      onProgress
+    );
+    return () =>
+      (globalThis.window.electron as any).off(
+        "on-game-transfer-progress",
+        onProgress
+      );
+  }, [game]);
 
   const debounceUpdateLaunchOptions = useRef(
     debounce(async (value: string) => {
@@ -248,47 +288,125 @@ export function GameOptionsModal({
         "games"
       )) as Game | null;
       if (gameData) {
-        const trimmedValue = value.trim();
-        const updated = {
-          ...gameData,
-          launchOptions: trimmedValue ? trimmedValue : null,
-        };
-        await levelDBService.put(gameKey, updated, "games");
+        const trimmed = value.trim();
+        await levelDBService.put(
+          gameKey,
+          { ...gameData, launchOptions: trimmed || null },
+          "games"
+        );
       }
       updateGame();
     }, 1000)
   ).current;
 
   const handleRemoveGameFromLibrary = async () => {
-    if (isGameDownloading) {
-      await cancelDownload(game.shop, game.objectId);
-    }
-
+    if (isGameDownloading) await cancelDownload(game.shop, game.objectId);
     await removeGameFromLibrary(game.shop, game.objectId);
     await Promise.all([updateGame(), updateLibrary(), loadCollections()]);
     onClose();
+    if (game.shop === "custom" && onNavigateHome) onNavigateHome();
+  };
 
-    // Redirect to home page if it's a custom game
-    if (game.shop === "custom" && onNavigateHome) {
-      onNavigateHome();
+  const handleCancelTransfer = () => {
+    globalThis.window.electron.cancelGameTransfer?.(game.shop, game.objectId);
+    setTransferProgress(0);
+    setTransferSpeed(0);
+    setTransferETA(0);
+    setShowCancelConfirm(false);
+  };
+
+  const getTransferErrorToast = (
+    result: Awaited<
+      ReturnType<typeof globalThis.window.electron.transferGameFiles>
+    >
+  ) => {
+    const neededSpace =
+      typeof result.needed === "number"
+        ? formatBytes(result.needed)
+        : t("transfer_unknown_size");
+    const availableSpace =
+      typeof result.available === "number"
+        ? formatBytes(result.available)
+        : t("transfer_unknown_size");
+
+    switch (result.error) {
+      case "Transfer cancelled":
+        return {
+          title: t("transfer_cancelled"),
+        };
+      case "not_enough_space":
+        return {
+          title: t("transfer_not_enough_space"),
+          message: t("not_enough_space_detail", {
+            needed: neededSpace,
+            available: availableSpace,
+          }),
+        };
+      case "Game is already in this location":
+        return {
+          title: t("transfer_same_folder"),
+        };
+      case "Destination is inside source folder":
+        return {
+          title: t("transfer_destination_inside_source"),
+        };
+      case "Destination folder already exists":
+        return {
+          title: t("transfer_destination_exists"),
+        };
+      case "Cannot access destination folder":
+        return {
+          title: t("transfer_destination_unavailable"),
+        };
+      case "Cannot determine game root folder":
+        return {
+          title: t("transfer_root_not_found"),
+        };
+      case "Game not found or has no executable path":
+        return {
+          title: t("transfer_game_not_found"),
+        };
+      case "Failed to update database":
+        return {
+          title: t("transfer_failed"),
+          message: t("transfer_db_update_failed"),
+        };
+      default:
+        return {
+          title: t("transfer_failed"),
+        };
     }
+  };
+
+  const handleStartTransfer = async (destPath: string) => {
+    const result = await globalThis.window.electron.transferGameFiles(
+      game.shop,
+      game.objectId,
+      destPath
+    );
+    if (!result.ok) {
+      const transferErrorToast = getTransferErrorToast(result);
+      showErrorToast(transferErrorToast.title, transferErrorToast.message);
+      throw new Error(transferErrorToast.message ?? transferErrorToast.title);
+    }
+    showSuccessToast(
+      t("transfer_complete"),
+      t("transfer_complete_description", { game: game.title })
+    );
   };
 
   const handleChangeExecutableLocation = async () => {
     const path = await selectGameExecutable();
-
     if (path) {
       const gameUsingPath =
-        await window.electron.verifyExecutablePathInUse(path);
-
+        await globalThis.window.electron.verifyExecutablePathInUse(path);
       if (gameUsingPath) {
         showErrorToast(
           t("executable_path_in_use", { game: gameUsingPath.title })
         );
         return;
       }
-
-      window.electron
+      globalThis.window.electron
         .updateExecutablePath(game.shop, game.objectId, path)
         .then(updateGame);
     }
@@ -299,24 +417,20 @@ export function GameOptionsModal({
   ) => {
     try {
       setCreatingSteamShortcut(true);
-
-      await window.electron.createSteamShortcut(
+      await globalThis.window.electron.createSteamShortcut(
         game.shop,
         game.objectId,
         options ?? {}
       );
-
       showSuccessToast(
         t("create_shortcut_success"),
         t("you_might_need_to_restart_steam")
       );
-
-      const exists = await window.electron.checkSteamShortcut(
+      const exists = await globalThis.window.electron.checkSteamShortcut(
         game.shop,
         game.objectId
       );
       setSteamShortcutExists(exists);
-
       updateGame();
     } catch (error: unknown) {
       logger.error("Failed to create Steam shortcut", error);
@@ -330,19 +444,19 @@ export function GameOptionsModal({
   const handleDeleteSteamShortcut = async () => {
     try {
       setCreatingSteamShortcut(true);
-      await window.electron.deleteSteamShortcut(game.shop, game.objectId);
-
+      await globalThis.window.electron.deleteSteamShortcut(
+        game.shop,
+        game.objectId
+      );
       showSuccessToast(
         t("delete_shortcut_success"),
         t("you_might_need_to_restart_steam")
       );
-
-      const exists = await window.electron.checkSteamShortcut(
+      const exists = await globalThis.window.electron.checkSteamShortcut(
         game.shop,
         game.objectId
       );
       setSteamShortcutExists(exists);
-
       updateGame();
     } catch (error: unknown) {
       logger.error("Failed to delete Steam shortcut", error);
@@ -353,67 +467,96 @@ export function GameOptionsModal({
   };
 
   const handleCreateShortcut = async (location: ShortcutLocation) => {
-    window.electron
+    globalThis.window.electron
       .createGameShortcut(game.shop, game.objectId, location)
-      .then((success) => {
-        if (success) {
-          showSuccessToast(t("create_shortcut_success"));
-        } else {
-          showErrorToast(t("create_shortcut_error"));
-        }
-      })
-      .catch(() => {
-        showErrorToast(t("create_shortcut_error"));
-      });
+      .then((success: boolean) =>
+        success
+          ? showSuccessToast(t("create_shortcut_success"))
+          : showErrorToast(t("create_shortcut_error"))
+      )
+      .catch(() => showErrorToast(t("create_shortcut_error")));
   };
 
-  const handleOpenDownloadFolder = async () => {
-    await window.electron.openGameInstallerPath(game.shop, game.objectId);
-  };
-
+  const handleOpenDownloadFolder = () =>
+    globalThis.window.electron.openGameInstallerPath(game.shop, game.objectId);
   const handleDeleteGame = async () => {
     await removeGameInstaller(game.shop, game.objectId);
     updateGame();
   };
-
-  const handleOpenGameExecutablePath = async () => {
-    await window.electron.openGameExecutablePath(game.shop, game.objectId);
-  };
-
+  const handleOpenGameExecutablePath = () =>
+    globalThis.window.electron.openGameExecutablePath(game.shop, game.objectId);
   const handleOpenSaveFolder = async () => {
-    if (saveFolderPath) {
-      await window.electron.openGameSaveFolder(
+    if (saveFolderPath)
+      await globalThis.window.electron.openGameSaveFolder(
         game.shop,
         game.objectId,
         saveFolderPath
       );
-    }
+  };
+  const handleClearExecutablePath = async () => {
+    await globalThis.window.electron.updateExecutablePath(
+      game.shop,
+      game.objectId,
+      null
+    );
+    updateGame();
   };
 
-  const handleClearExecutablePath = async () => {
-    await window.electron.updateExecutablePath(game.shop, game.objectId, null);
+  const handleAddTrackingExecutable = async () => {
+    const current = game.trackingExecutablePaths ?? [];
+    if (current.length >= 2) return;
 
+    const filters = getGameExecutableFilters(
+      globalThis.window.electron.platform,
+      {
+        executable: t("game_executable"),
+        allFiles: t("all_files"),
+      }
+    );
+
+    const { filePaths } = await globalThis.window.electron.showOpenDialog({
+      properties: ["openFile"],
+      defaultPath: game.executablePath ?? undefined,
+      filters,
+    });
+
+    const path = filePaths?.[0];
+    if (!path || current.includes(path)) return;
+
+    await globalThis.window.electron.updateTrackingExecutablePaths(
+      game.shop,
+      game.objectId,
+      [...current, path]
+    );
+    updateGame();
+  };
+
+  const handleRemoveTrackingExecutable = async (index: number) => {
+    const current = game.trackingExecutablePaths ?? [];
+    await globalThis.window.electron.updateTrackingExecutablePaths(
+      game.shop,
+      game.objectId,
+      current.filter((_, itemIndex) => itemIndex !== index)
+    );
     updateGame();
   };
 
   const handleChangeWinePrefixPath = async () => {
     const defaultPath =
-      await window.electron.getDefaultWinePrefixSelectionPath();
-
-    const { filePaths } = await window.electron.showOpenDialog({
+      await globalThis.window.electron.getDefaultWinePrefixSelectionPath();
+    const { filePaths } = await globalThis.window.electron.showOpenDialog({
       properties: ["openDirectory"],
       defaultPath: game?.winePrefixPath ?? defaultPath ?? "",
     });
-
-    if (filePaths && filePaths.length > 0) {
+    if (filePaths?.length) {
       try {
-        await window.electron.selectGameWinePrefix(
+        await globalThis.window.electron.selectGameWinePrefix(
           game.shop,
           game.objectId,
           filePaths[0]
         );
         await updateGame();
-      } catch (error) {
+      } catch {
         showErrorToast(
           t("invalid_wine_prefix_path"),
           t("invalid_wine_prefix_path_description")
@@ -423,38 +566,45 @@ export function GameOptionsModal({
   };
 
   const handleClearWinePrefixPath = async () => {
-    await window.electron.selectGameWinePrefix(game.shop, game.objectId, null);
+    await globalThis.window.electron.selectGameWinePrefix(
+      game.shop,
+      game.objectId,
+      null
+    );
     updateGame();
   };
-
   const handleOpenWinetricks = async () => {
-    const success = await window.electron.openGameWinetricks(
+    const success = await globalThis.window.electron.openGameWinetricks(
       game.shop,
       game.objectId
     );
-
-    if (success) {
-      showSuccessToast(t("winetricks_opened"));
-    } else {
-      showErrorToast(t("winetricks_open_error"));
-    }
+    success
+      ? showSuccessToast(t("winetricks_opened"))
+      : showErrorToast(t("winetricks_open_error"));
   };
 
   const handleChangeMangohudState = async (value: boolean) => {
     setAutoRunMangohud(value);
-    await window.electron.toggleGameMangohud(game.shop, game.objectId, value);
+    await globalThis.window.electron.toggleGameMangohud(
+      game.shop,
+      game.objectId,
+      value
+    );
     updateGame();
   };
-
   const handleChangeGamemodeState = async (value: boolean) => {
     setAutoRunGamemode(value);
-    await window.electron.toggleGameGamemode(game.shop, game.objectId, value);
+    await globalThis.window.electron.toggleGameGamemode(
+      game.shop,
+      game.objectId,
+      value
+    );
     updateGame();
   };
 
   const applyProtonPathChange = async (protonPath: string) => {
     try {
-      await window.electron.selectGameProtonPath(
+      await globalThis.window.electron.selectGameProtonPath(
         game.shop,
         game.objectId,
         protonPath || null
@@ -469,57 +619,45 @@ export function GameOptionsModal({
   const handleChangeLaunchOptions = (
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
-    const value = event.target.value;
-
-    setLaunchOptions(value);
-    debounceUpdateLaunchOptions(value);
+    const v = event.target.value;
+    setLaunchOptions(v);
+    debounceUpdateLaunchOptions(v);
   };
-
-  const handleChangeGameTitle = (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
+  const handleChangeGameTitle = (event: React.ChangeEvent<HTMLInputElement>) =>
     setGameTitle(event.target.value);
-  };
 
   const handleBlurGameTitle = async () => {
     if (updatingGameTitle) return;
-
-    const trimmedTitle = gameTitle.trim();
-    const currentTitle = (game.title ?? "").trim();
-
-    if (!trimmedTitle) {
+    const trimmed = gameTitle.trim();
+    if (!trimmed) {
       setGameTitle(game.title ?? "");
       showErrorToast(t("edit_game_modal_fill_required"));
       return;
     }
-
-    if (trimmedTitle === currentTitle) {
+    if (trimmed === (game.title ?? "").trim()) {
       setGameTitle(game.title ?? "");
       return;
     }
-
     setUpdatingGameTitle(true);
-
     try {
       if (game.shop === "custom") {
-        await window.electron.updateCustomGame({
+        await globalThis.window.electron.updateCustomGame({
           shop: game.shop,
           objectId: game.objectId,
-          title: trimmedTitle,
+          title: trimmed,
           iconUrl: game.iconUrl || undefined,
           logoImageUrl: game.logoImageUrl || undefined,
           libraryHeroImageUrl: game.libraryHeroImageUrl || undefined,
         });
       } else {
-        await window.electron.updateGameCustomAssets({
+        await globalThis.window.electron.updateGameCustomAssets({
           shop: game.shop,
           objectId: game.objectId,
-          title: trimmedTitle,
+          title: trimmed,
         });
       }
-
       await Promise.all([updateGame(), updateLibrary()]);
-      setGameTitle(trimmedTitle);
+      setGameTitle(trimmed);
     } catch (error) {
       setGameTitle(game.title ?? "");
       showErrorToast(
@@ -530,34 +668,59 @@ export function GameOptionsModal({
     }
   };
 
+  const handleResetGameTitle = useCallback(async () => {
+    if (!game || updatingGameTitle || game.shop === "custom") return;
+
+    setUpdatingGameTitle(true);
+
+    try {
+      const assets = await globalThis.window.electron.getGameAssets(
+        game.objectId,
+        game.shop,
+        { forceFresh: true }
+      );
+
+      if (assets?.title) {
+        await globalThis.window.electron.updateGameCustomAssets({
+          shop: game.shop,
+          objectId: game.objectId,
+          title: assets.title,
+        });
+
+        await Promise.all([updateGame(), updateLibrary()]);
+        setGameTitle(assets.title);
+      }
+    } catch {
+      showErrorToast(t("edit_game_modal_failed"));
+    } finally {
+      setUpdatingGameTitle(false);
+    }
+  }, [game, updatingGameTitle, showErrorToast, t, updateGame, updateLibrary]);
+
   const handleChangeProtonVersion = (value: string) => {
     setSelectedProtonPath(value);
-
-    const currentProtonPath = game.protonPath ?? "";
-    if (value === currentProtonPath) {
-      return;
-    }
-
-    void applyProtonPathChange(value);
+    if (value !== (game.protonPath ?? "")) applyProtonPathChange(value);
   };
 
   const handleClearLaunchOptions = async () => {
     setLaunchOptions("");
-
     const gameKey = getGameKey(game.shop, game.objectId);
     const gameData = (await levelDBService.get(
       gameKey,
       "games"
     )) as Game | null;
-    if (gameData) {
-      const updated = { ...gameData, launchOptions: null };
-      await levelDBService.put(gameKey, updated, "games");
-    }
+    if (gameData)
+      await levelDBService.put(
+        gameKey,
+        { ...gameData, launchOptions: null },
+        "games"
+      );
     updateGame();
   };
 
+  const isLaunchbox = game.shop === "launchbox";
   const shouldShowWinePrefixConfiguration =
-    window.electron.platform === "linux";
+    globalThis.window.electron.platform === "linux";
   const defaultHydraWinePrefixPath = defaultWinePrefixPath
     ? `${defaultWinePrefixPath}/${game.objectId}`
     : null;
@@ -571,6 +734,15 @@ export function GameOptionsModal({
         label: t("settings_category_general"),
         icon: <GearIcon size={16} />,
       },
+      ...(isLaunchbox
+        ? []
+        : [
+            {
+              id: "locations" as const,
+              label: t("settings_category_locations"),
+              icon: <FileDirectoryIcon size={16} />,
+            },
+          ]),
       {
         id: "assets" as const,
         label: t("settings_category_assets"),
@@ -601,40 +773,60 @@ export function GameOptionsModal({
         icon: <AlertIcon size={16} />,
       },
     ],
-    [shouldShowWinePrefixConfiguration, t]
+    [isLaunchbox, shouldShowWinePrefixConfiguration, t]
   );
 
   useEffect(() => {
-    if (visible) {
-      setSelectedCategory(initialCategory ?? "general");
-    }
-  }, [initialCategory, visible]);
+    if (!visible) return;
 
+    const category = initialCategory ?? "general";
+    if (category === "hydra_cloud" && !hasActiveSubscription) {
+      setSelectedCategory("general");
+      showHydraCloudModal("backup");
+      return;
+    }
+
+    setSelectedCategory(category);
+  }, [hasActiveSubscription, initialCategory, showHydraCloudModal, visible]);
+
+  // Non-subscribers don't open the cloud-save panel; clicking the menu item
+  // presents the Hydra Cloud promo (highlighting cloud saving) instead.
+  const handleSelectCategory = (category: typeof selectedCategory) => {
+    if (category === "hydra_cloud" && !hasActiveSubscription) {
+      showHydraCloudModal("backup");
+      return;
+    }
+    setSelectedCategory(category);
+  };
   const shouldShowCreateStartMenuShortcut =
-    window.electron.platform === "win32";
+    globalThis.window.electron.platform === "win32";
+
   const handleResetAchievements = async () => {
     setIsDeletingAchievements(true);
     try {
-      await window.electron.resetGameAchievements(game.shop, game.objectId);
+      await globalThis.window.electron.resetGameAchievements(
+        game.shop,
+        game.objectId
+      );
       await updateGame();
       showSuccessToast(t("reset_achievements_success"));
-    } catch (error) {
+    } catch {
       showErrorToast(t("reset_achievements_error"));
     } finally {
       setIsDeletingAchievements(false);
     }
   };
 
-  const handleChangePlaytime = async (playtimeInSeconds: number) => {
+  const handleChangePlaytime = async (sec: number) => {
     try {
-      await window.electron.changeGamePlayTime(
+      await globalThis.window.electron.changeGamePlayTime(
         game.shop,
         game.objectId,
-        playtimeInSeconds
+        sec
       );
       await updateGame();
       showSuccessToast(t("update_playtime_success"));
-    } catch (error) {
+    } catch {
       showErrorToast(t("update_playtime_error"));
     }
   };
@@ -643,19 +835,88 @@ export function GameOptionsModal({
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
     setAutomaticCloudSync(event.target.checked);
-
     const gameKey = getGameKey(game.shop, game.objectId);
     const gameData = (await levelDBService.get(
       gameKey,
       "games"
     )) as Game | null;
-    if (gameData) {
-      const updated = { ...gameData, automaticCloudSync: event.target.checked };
-      await levelDBService.put(gameKey, updated, "games");
-    }
-
+    if (gameData)
+      await levelDBService.put(
+        gameKey,
+        { ...gameData, automaticCloudSync: event.target.checked },
+        "games"
+      );
     updateGame();
   };
+
+  const baseGeneralSettingsProps = useMemo(
+    () => ({
+      game,
+      gameTitle,
+      launchOptions,
+      updatingGameTitle,
+      creatingSteamShortcut,
+      shouldShowCreateStartMenuShortcut,
+      shouldShowWinePrefixConfiguration,
+      loadingSaveFolder,
+      saveFolderPath,
+      steamShortcutExists,
+      onChangeExecutableLocation: handleChangeExecutableLocation,
+      onClearExecutablePath: handleClearExecutablePath,
+      onOpenGameExecutablePath: handleOpenGameExecutablePath,
+      onOpenSaveFolder: handleOpenSaveFolder,
+      onCreateShortcut: handleCreateShortcut,
+      onCreateSteamShortcut: () => setShowSteamShortcutModal(true),
+      onDeleteSteamShortcut: handleDeleteSteamShortcut,
+      onChangeGameTitle: handleChangeGameTitle,
+      onBlurGameTitle: handleBlurGameTitle,
+      onResetGameTitle: handleResetGameTitle,
+      onChangeLaunchOptions: handleChangeLaunchOptions,
+      onClearLaunchOptions: handleClearLaunchOptions,
+      isTransferring,
+      transferProgress,
+      drives,
+      onStartTransfer: handleStartTransfer,
+      onCancelDriveSelection: () => {},
+      transferSpeed,
+      transferETA,
+      showCancelConfirm,
+      onShowCancelConfirm: () => setShowCancelConfirm(true),
+      onHideCancelConfirm: () => setShowCancelConfirm(false),
+      onConfirmCancelTransfer: handleCancelTransfer,
+    }),
+    [
+      game,
+      gameTitle,
+      launchOptions,
+      updatingGameTitle,
+      creatingSteamShortcut,
+      shouldShowCreateStartMenuShortcut,
+      shouldShowWinePrefixConfiguration,
+      loadingSaveFolder,
+      saveFolderPath,
+      steamShortcutExists,
+      handleChangeExecutableLocation,
+      handleClearExecutablePath,
+      handleOpenGameExecutablePath,
+      handleOpenSaveFolder,
+      handleCreateShortcut,
+      handleDeleteSteamShortcut,
+      handleChangeGameTitle,
+      handleBlurGameTitle,
+      handleResetGameTitle,
+      handleChangeLaunchOptions,
+      handleClearLaunchOptions,
+      isTransferring,
+      transferProgress,
+      drives,
+      handleStartTransfer,
+      transferSpeed,
+      transferETA,
+      showCancelConfirm,
+      handleCancelTransfer,
+    ]
+  );
 
   return (
     <>
@@ -664,28 +925,24 @@ export function GameOptionsModal({
         onClose={() => setShowDeleteModal(false)}
         deleteGame={handleDeleteGame}
       />
-
       <RemoveGameFromLibraryModal
         visible={showRemoveGameModal}
         onClose={() => setShowRemoveGameModal(false)}
         removeGameFromLibrary={handleRemoveGameFromLibrary}
         game={game}
       />
-
       <ResetAchievementsModal
         visible={showResetAchievementsModal}
         onClose={() => setShowResetAchievementsModal(false)}
         resetAchievements={handleResetAchievements}
         game={game}
       />
-
       <ChangeGamePlaytimeModal
         visible={showChangePlaytimeModal}
         onClose={() => setShowChangePlaytimeModal(false)}
         changePlaytime={handleChangePlaytime}
         game={game}
       />
-
       <CreateSteamShortcutModal
         visible={showSteamShortcutModal}
         creating={creatingSteamShortcut}
@@ -704,40 +961,27 @@ export function GameOptionsModal({
           <GameOptionsSidebar
             categories={categories}
             selectedCategory={selectedCategory}
-            onSelectCategory={setSelectedCategory}
+            onSelectCategory={handleSelectCategory}
           />
-
           <div className="game-options-modal__panel">
             {selectedCategory === "general" && (
               <GeneralSettingsSection
-                game={game}
-                gameTitle={gameTitle}
-                launchOptions={launchOptions}
-                updatingGameTitle={updatingGameTitle}
-                creatingSteamShortcut={creatingSteamShortcut}
-                shouldShowCreateStartMenuShortcut={
-                  shouldShowCreateStartMenuShortcut
-                }
-                shouldShowWinePrefixConfiguration={
-                  shouldShowWinePrefixConfiguration
-                }
-                loadingSaveFolder={loadingSaveFolder}
-                saveFolderPath={saveFolderPath}
-                steamShortcutExists={steamShortcutExists}
-                onChangeExecutableLocation={handleChangeExecutableLocation}
-                onClearExecutablePath={handleClearExecutablePath}
-                onOpenGameExecutablePath={handleOpenGameExecutablePath}
-                onOpenSaveFolder={handleOpenSaveFolder}
-                onCreateShortcut={handleCreateShortcut}
-                onCreateSteamShortcut={() => setShowSteamShortcutModal(true)}
-                onDeleteSteamShortcut={handleDeleteSteamShortcut}
-                onChangeGameTitle={handleChangeGameTitle}
-                onBlurGameTitle={handleBlurGameTitle}
-                onChangeLaunchOptions={handleChangeLaunchOptions}
-                onClearLaunchOptions={handleClearLaunchOptions}
+                {...baseGeneralSettingsProps}
+                showExecutableSection={isLaunchbox}
+                showTransferSection={false}
+                showLaunchOptionsSection={!isLaunchbox}
               />
             )}
-
+            {selectedCategory === "locations" && (
+              <GeneralSettingsSection
+                {...baseGeneralSettingsProps}
+                onAddTrackingExecutable={handleAddTrackingExecutable}
+                onRemoveTrackingExecutable={handleRemoveTrackingExecutable}
+                showTitleSection={false}
+                showShortcutsSection={false}
+                showLaunchOptionsSection={false}
+              />
+            )}
             {selectedCategory === "assets" && (
               <GameAssetsSettings
                 game={game}
@@ -745,7 +989,6 @@ export function GameOptionsModal({
                 onGameUpdated={updateGame}
               />
             )}
-
             {selectedCategory === "hydra_cloud" && (
               <HydraCloudSettingsSection
                 game={game}
@@ -753,7 +996,6 @@ export function GameOptionsModal({
                 onToggleAutomaticCloudSync={handleToggleAutomaticCloudSync}
               />
             )}
-
             {selectedCategory === "compatibility" &&
               shouldShowWinePrefixConfiguration && (
                 <CompatibilitySettingsSection
@@ -778,7 +1020,6 @@ export function GameOptionsModal({
                   onChangeProtonVersion={handleChangeProtonVersion}
                 />
               )}
-
             {selectedCategory === "downloads" && (
               <DownloadsSettingsSection
                 game={game}
@@ -789,7 +1030,6 @@ export function GameOptionsModal({
                 onOpenDownloadFolder={handleOpenDownloadFolder}
               />
             )}
-
             {selectedCategory === "danger_zone" && (
               <DangerZoneSection
                 game={game}

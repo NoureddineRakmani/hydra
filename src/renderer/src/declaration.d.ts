@@ -11,11 +11,11 @@ import type {
   PremiumizeUser,
   AllDebridUser,
   UserProfile,
-  FriendRequestAction,
   UpdateProfileRequest,
   GameStats,
   UserDetails,
   FriendRequestSync,
+  FriendPresenceSync,
   NotificationSync,
   GameArtifact,
   LudusaviBackup,
@@ -27,6 +27,10 @@ import type {
   Theme,
   Auth,
   ShortcutLocation,
+  Ps2MemcardScanInput,
+  Ps2MemcardScanProgress,
+  Ps2MemoryCardSaveRecord,
+  Ps2ExportResult,
   ShopAssets,
   ShopDetailsWithAssets,
   AchievementCustomNotificationPosition,
@@ -38,8 +42,29 @@ import type {
   ProtonVersion,
   CreateSteamShortcutOptions,
   TorrentFilesResponse,
+  DownloadLayoutState,
+  EmulatorConfig,
+  EmulatorConfigMap,
+  EmulatorSystem,
+  EmulationBackupProgress,
+  EmulatorBinary,
+  EmulatorInstallProgress,
+  EmulatorInstallResult,
+  ResolvedInstallOption,
+  DetectedRom,
+  EmulationCloudSave,
+  EmulationSavePlatform,
+  MemcardRestoreResult,
+  MemcardRestoreTarget,
 } from "@types";
 import type { AxiosProgressEvent } from "axios";
+
+export interface DriveInfo {
+  root: string;
+  label: string;
+  free: number;
+  total: number;
+}
 
 declare global {
   declare module "*.svg" {
@@ -57,7 +82,11 @@ declare global {
     ) => Promise<{ ok: boolean; error?: string }>;
     cancelGameDownload: (shop: GameShop, objectId: string) => Promise<void>;
     pauseGameDownload: (shop: GameShop, objectId: string) => Promise<void>;
-    resumeGameDownload: (shop: GameShop, objectId: string) => Promise<void>;
+    resumeGameDownload: (
+      shop: GameShop,
+      objectId: string,
+      strategy?: "interruptActive" | "queueIfActive"
+    ) => Promise<void>;
     pauseGameSeed: (shop: GameShop, objectId: string) => Promise<void>;
     resumeGameSeed: (shop: GameShop, objectId: string) => Promise<void>;
     updateDownloadQueuePosition: (
@@ -65,6 +94,23 @@ declare global {
       objectId: string,
       direction: "up" | "down"
     ) => Promise<boolean>;
+    setDownloadQueuePosition: (
+      shop: GameShop,
+      objectId: string,
+      targetIndex: number
+    ) => Promise<boolean>;
+    setPausedDownloadPosition: (
+      shop: GameShop,
+      objectId: string,
+      targetIndex: number
+    ) => Promise<boolean>;
+    moveDownloadPlacement: (
+      shop: GameShop,
+      objectId: string,
+      targetArea: "hero" | "queue" | "paused",
+      targetIndex?: number
+    ) => Promise<boolean>;
+    getDownloadLayoutState: () => Promise<DownloadLayoutState>;
     onDownloadProgress: (
       cb: (value: DownloadProgress | null) => void
     ) => () => Electron.IpcRenderer;
@@ -72,9 +118,6 @@ declare global {
       cb: (value: SeedingStatus[]) => void
     ) => () => Electron.IpcRenderer;
     onHardDelete: (cb: () => void) => () => Electron.IpcRenderer;
-    checkDebridAvailability: (
-      magnets: string[]
-    ) => Promise<Record<string, boolean>>;
     getTorrentFiles: (
       magnet: string
     ) => Promise<
@@ -91,7 +134,8 @@ declare global {
     getGameStats: (objectId: string, shop: GameShop) => Promise<GameStats>;
     getGameAssets: (
       objectId: string,
-      shop: GameShop
+      shop: GameShop,
+      options?: { forceFresh?: boolean }
     ) => Promise<ShopAssets | null>;
     onUpdateAchievements: (
       objectId: string,
@@ -121,7 +165,8 @@ declare global {
     addGameToLibrary: (
       shop: GameShop,
       objectId: string,
-      title: string
+      title: string,
+      platform?: string | null
     ) => Promise<void>;
     addCustomGameToLibrary: (
       title: string,
@@ -169,6 +214,11 @@ declare global {
       shop: GameShop,
       objectId: string,
       executablePath: string | null
+    ) => Promise<void>;
+    updateTrackingExecutablePaths: (
+      shop: GameShop,
+      objectId: string,
+      trackingExecutablePaths: string[]
     ) => Promise<void>;
     addGameToFavorites: (shop: GameShop, objectId: string) => Promise<void>;
     removeGameFromFavorites: (
@@ -235,6 +285,26 @@ declare global {
       executablePath: string,
       launchOptions?: string | null
     ) => Promise<void>;
+    openClassicsGame: (
+      shop: GameShop,
+      objectId: string,
+      discPath?: string,
+      force?: boolean
+    ) => Promise<void>;
+    updateClassicsDisc: (
+      shop: GameShop,
+      objectId: string,
+      patch: {
+        selectedDiscPath?: string | null;
+        dontAskDiscSelection?: boolean;
+        platform?: string | null;
+        addDisc?: { path: string; label: string; fileName: string };
+        removeDiscPath?: string;
+      }
+    ) => Promise<LibraryGame>;
+    getEmulatorRomExtensions: (
+      system: "ps1" | "ps2" | "ps3"
+    ) => Promise<string[]>;
     closeGame: (shop: GameShop, objectId: string) => Promise<boolean>;
     removeGameFromLibrary: (shop: GameShop, objectId: string) => Promise<void>;
     removeGame: (shop: GameShop, objectId: string) => Promise<void>;
@@ -243,12 +313,71 @@ declare global {
       shop: GameShop,
       objectId: string
     ) => Promise<LibraryGame | null>;
+    getGamesRunning: () => Promise<
+      Pick<GameRunning, "id" | "sessionDurationInMillis">[]
+    >;
     onGamesRunning: (
       cb: (
         gamesRunning: Pick<GameRunning, "id" | "sessionDurationInMillis">[]
       ) => void
     ) => () => Electron.IpcRenderer;
     onLibraryBatchComplete: (cb: () => void) => () => Electron.IpcRenderer;
+    onDownloadsUpdated: (cb: () => void) => () => Electron.IpcRenderer;
+    onClassicsImportStatus: (
+      cb: (importing: boolean) => void
+    ) => () => Electron.IpcRenderer;
+    getClassicsImportStatus: () => Promise<boolean>;
+    getActiveClassicsImport: () => Promise<{
+      requestId: string;
+      system: EmulatorSystem;
+      phase: "scanning" | "matching" | "done";
+      processed: number;
+      total: number;
+      percent: number;
+      currentFile: string | null;
+      status: "matched" | "wrong_platform" | "unmatched" | null;
+      discovered: number;
+      matched: number;
+      sizeBytes: number;
+    } | null>;
+    onClassicsImportProgress: (
+      cb: (
+        payload:
+          | {
+              type: "progress";
+              requestId: string;
+              system: EmulatorSystem;
+              phase: "scanning" | "matching";
+              processed: number;
+              total: number;
+              percent: number;
+              currentFile: string | null;
+              status: "matched" | "wrong_platform" | "unmatched" | null;
+              discovered: number;
+              matched: number;
+              sizeBytes: number;
+            }
+          | {
+              type: "done" | "cancelled";
+              requestId: string;
+              system: EmulatorSystem;
+              fileCount: number;
+              sizeBytes: number;
+              matched: number;
+              unmatched: number;
+              unmatchedFiles: {
+                name: string;
+                reason: "wrong_platform" | "unmatched";
+              }[];
+            }
+          | {
+              type: "error";
+              requestId: string;
+              system: EmulatorSystem;
+              message: string;
+            }
+      ) => void
+    ) => () => Electron.IpcRenderer;
     resetGameAchievements: (shop: GameShop, objectId: string) => Promise<void>;
     changeGamePlayTime: (
       shop: GameShop,
@@ -264,12 +393,179 @@ declare global {
     updateUserPreferences: (
       preferences: Partial<UserPreferences>
     ) => Promise<void>;
+    /* Emulators */
+    getEmulatorConfigs: () => Promise<EmulatorConfigMap>;
+    detectEmulators: () => Promise<EmulatorConfigMap>;
+    detectEmulator: (system: EmulatorSystem) => Promise<EmulatorConfig>;
+    previewEmulatorExecutable: (
+      system: EmulatorSystem,
+      executablePath?: string | null
+    ) => Promise<{
+      executablePath: string;
+      detectedVersion: string | null;
+    } | null>;
+    setEmulatorExecutablePath: (
+      system: EmulatorSystem,
+      executablePath: string | null
+    ) => Promise<EmulatorConfig>;
+    addRomFolder: (
+      system: EmulatorSystem,
+      folderPath: string,
+      scanSubfolders: boolean,
+      language?: string
+    ) => Promise<EmulatorConfig>;
+    removeRomFolder: (
+      system: EmulatorSystem,
+      folderId: string
+    ) => Promise<EmulatorConfig>;
+    listEmulatorRoms: (system: EmulatorSystem) => Promise<DetectedRom[]>;
+    toggleRomFolderSubfolders: (
+      system: EmulatorSystem,
+      folderId: string,
+      scanSubfolders: boolean
+    ) => Promise<EmulatorConfig>;
+    rescanEmulator: (
+      system: EmulatorSystem,
+      language?: string
+    ) => Promise<EmulatorConfig>;
+    checkPs3Firmware: (
+      executablePath: string | null
+    ) => Promise<{ installed: boolean }>;
+    checkEmulatorBios: (
+      system: EmulatorSystem,
+      executablePath: string | null
+    ) => Promise<{ installed: boolean }>;
+    getEmulatorInstallOptions: (
+      binary: EmulatorBinary
+    ) => Promise<ResolvedInstallOption[]>;
+    installEmulator: (
+      binary: EmulatorBinary,
+      optionId: string
+    ) => Promise<EmulatorInstallResult>;
+    onEmulatorInstallProgress: (
+      cb: (payload: EmulatorInstallProgress) => void
+    ) => () => void;
+    startRomScan: (
+      system: EmulatorSystem,
+      folderPath: string,
+      scanSubfolders: boolean
+    ) => Promise<{ requestId: string }>;
+    cancelRomScan: (requestId: string) => Promise<void>;
+    getEmulatorRomPaths: (system: EmulatorSystem) => Promise<string[]>;
+    addEmulatorRomPath: (
+      system: EmulatorSystem,
+      folderPath: string
+    ) => Promise<boolean>;
+    getRpcs3DefaultSources: () => Promise<{
+      gamesDir: string | null;
+      gamesYmlPath: string | null;
+      gamesYmlEntries: { titleId: string; path: string }[];
+    }>;
+    removeEmulator: (system: EmulatorSystem) => Promise<EmulatorConfig>;
+    checkEmulatorExecutable: (
+      system: EmulatorSystem
+    ) => Promise<{ exists: boolean }>;
+    onRomScanProgress: (
+      requestId: string,
+      cb: (
+        payload:
+          | {
+              type: "progress";
+              processed: number;
+              total: number;
+              currentFile: string | null;
+            }
+          | { type: "done"; fileCount: number; sizeBytes: number }
+          | { type: "cancelled"; fileCount: number; sizeBytes: number }
+          | { type: "error"; message: string }
+      ) => void
+    ) => () => Electron.IpcRenderer;
+    importLaunchboxRoms: (
+      system: EmulatorSystem,
+      folders: { path: string; scanSubfolders: boolean }[],
+      language: string
+    ) => Promise<{ requestId: string }>;
+    cancelLaunchboxImport: (requestId: string) => Promise<void>;
+    scanPs2Memcards: (
+      input: Ps2MemcardScanInput
+    ) => Promise<{ requestId: string }>;
+    cancelPs2MemcardScan: (requestId: string) => Promise<void>;
+    onPs2MemcardScanProgress: (
+      requestId: string,
+      cb: (payload: Ps2MemcardScanProgress) => void
+    ) => () => Electron.IpcRenderer;
+    listPs2MemcardSaves: () => Promise<Ps2MemoryCardSaveRecord[]>;
+    forgetPs2MemcardSave: (
+      cardFilePath: string,
+      folderName: string
+    ) => Promise<void>;
+    forgetPs2MemcardCard: (cardFilePath: string) => Promise<void>;
+    exportPs2Save: (
+      cardFilePath: string,
+      folderName: string,
+      suggestedName: string
+    ) => Promise<Ps2ExportResult>;
+    scanPs1Memcards: (
+      input: Ps2MemcardScanInput
+    ) => Promise<{ requestId: string }>;
+    cancelPs1MemcardScan: (requestId: string) => Promise<void>;
+    onPs1MemcardScanProgress: (
+      requestId: string,
+      cb: (payload: Ps2MemcardScanProgress) => void
+    ) => () => Electron.IpcRenderer;
+    listPs1MemcardSaves: () => Promise<Ps2MemoryCardSaveRecord[]>;
+    forgetPs1MemcardSave: (
+      cardFilePath: string,
+      identifier: string
+    ) => Promise<void>;
+    forgetPs1MemcardCard: (cardFilePath: string) => Promise<void>;
+    exportPs1Save: (
+      cardFilePath: string,
+      identifier: string,
+      suggestedName: string
+    ) => Promise<Ps2ExportResult>;
+    uploadEmulationSave: (
+      platform: EmulationSavePlatform,
+      cardFilePath: string,
+      folderName: string
+    ) => Promise<EmulationCloudSave>;
+    uploadEmulationSavesForCard: (
+      platform: EmulationSavePlatform,
+      cardFilePath: string
+    ) => Promise<{ uploaded: number; total: number }>;
+    onEmulationBackupProgress: (
+      cb: (payload: EmulationBackupProgress) => void
+    ) => () => Electron.IpcRenderer;
+    getActiveEmulationBackups: () => Promise<EmulationBackupProgress[]>;
+    listEmulationSaves: (
+      platform: EmulationSavePlatform,
+      objectId?: string | null
+    ) => Promise<EmulationCloudSave[]>;
+    getMemcardRestoreTargets: (
+      platform: EmulationSavePlatform
+    ) => Promise<MemcardRestoreTarget[]>;
+    restoreEmulationSave: (
+      platform: EmulationSavePlatform,
+      saveId: string,
+      targetCardFilePath: string
+    ) => Promise<MemcardRestoreResult>;
+    deleteEmulationSave: (saveId: string) => Promise<void>;
+    updateEmulationSaveLabel: (
+      saveId: string,
+      label: string
+    ) => Promise<EmulationCloudSave>;
+    onUserPreferencesUpdated: (
+      cb: (preferences: UserPreferences | null) => void
+    ) => () => Electron.IpcRenderer;
     autoLaunch: (autoLaunchProps: {
       enabled: boolean;
       minimized: boolean;
     }) => Promise<void>;
     extractGameDownload: (shop: GameShop, objectId: string) => Promise<boolean>;
-    scanInstalledGames: () => Promise<{
+    scanInstalledGames: (
+      additionalDirectories?: string[],
+      includeDefaultDirectories?: boolean
+    ) => Promise<{
       foundGames: { title: string; executablePath: string }[];
       total: number;
     }>;
@@ -337,7 +633,7 @@ declare global {
     onBackupDownloadComplete: (
       objectId: string,
       shop: GameShop,
-      cb: () => void
+      cb: (success: boolean) => void
     ) => () => Electron.IpcRenderer;
     onUploadComplete: (
       objectId: string,
@@ -350,9 +646,15 @@ declare global {
       cb: (progress: AxiosProgressEvent) => void
     ) => () => Electron.IpcRenderer;
 
+    /* Clipboard */
+    clipboard: {
+      writeText: (text: string) => Promise<void>;
+    };
+
     /* Misc */
     openExternal: (src: string) => Promise<void>;
     openCheckout: () => Promise<void>;
+    getCloudIframeUrl: () => Promise<string>;
     getVersion: () => Promise<string>;
     isStaging: () => Promise<boolean>;
     ping: () => string;
@@ -363,6 +665,10 @@ declare global {
     ) => Promise<Electron.OpenDialogReturnValue>;
     showItemInFolder: (path: string) => Promise<void>;
     getImageDataUrl: (imageUrl: string) => Promise<string | null>;
+    getProcessedFriendImage: (
+      imageUrl: string | null,
+      options: { width: number; height: number; preserveAnimation?: boolean }
+    ) => Promise<string | null>;
     hydraApi: {
       get: <T = unknown>(
         url: string,
@@ -432,6 +738,7 @@ declare global {
     saveTempFile: (fileName: string, fileData: Uint8Array) => Promise<string>;
     deleteTempFile: (filePath: string) => Promise<void>;
     platform: NodeJS.Platform;
+    isWayland: boolean;
 
     /* Auto update */
     onAutoUpdaterEvent: (
@@ -444,6 +751,8 @@ declare global {
     getAuth: () => Promise<Auth | null>;
     signOut: () => Promise<void>;
     openAuthWindow: (page: AuthPage) => Promise<void>;
+    minimizeAuthWindow: () => Promise<void>;
+    closeAuthWindow: () => Promise<void>;
     getSessionHash: () => Promise<string | null>;
     onSignIn: (cb: () => void) => () => Electron.IpcRenderer;
     onAccountUpdated: (cb: () => void) => () => Electron.IpcRenderer;
@@ -466,25 +775,38 @@ declare global {
       updateProfile: UpdateProfileRequest
     ) => Promise<UserProfile>;
     updateProfile: (updateProfile: UpdateProfileProps) => Promise<UserProfile>;
+    getProfileImageMetadata: (
+      path: string
+    ) => Promise<{ mimeType: string | null; isAnimated: boolean }>;
     processProfileImage: (
       path: string
     ) => Promise<{ imagePath: string; mimeType: string }>;
+    cropProfileImage: (
+      path: string,
+      params: {
+        left: number;
+        top: number;
+        width: number;
+        height: number;
+        outputWidth: number;
+        outputHeight: number;
+        rotation?: number;
+      }
+    ) => Promise<{ imagePath: string }>;
     onSyncFriendRequests: (
       cb: (friendRequests: FriendRequestSync) => void
     ) => () => Electron.IpcRenderer;
     onSyncNotificationCount: (
       cb: (notification: NotificationSync) => void
     ) => () => Electron.IpcRenderer;
-    updateFriendRequest: (
-      userId: string,
-      action: FriendRequestAction
-    ) => Promise<void>;
+    syncFriendRequests: (friendRequestCount: number) => Promise<void>;
 
     /* Notifications */
     publishNewRepacksNotification: (newRepacksCount: number) => Promise<void>;
     getLocalNotifications: () => Promise<LocalNotification[]>;
     getLocalNotificationsCount: () => Promise<number>;
     markLocalNotificationRead: (id: string) => Promise<void>;
+    markLocalNotificationUnread: (id: string) => Promise<void>;
     markAllLocalNotificationsRead: () => Promise<void>;
     deleteLocalNotification: (id: string) => Promise<void>;
     clearAllLocalNotifications: () => Promise<void>;
@@ -495,6 +817,12 @@ declare global {
       cb: (
         position?: AchievementCustomNotificationPosition,
         achievements?: AchievementNotificationInfo[]
+      ) => void
+    ) => () => Electron.IpcRenderer;
+    onInAppAchievementUnlocked?: (
+      cb: (
+        position: AchievementCustomNotificationPosition,
+        achievements: AchievementNotificationInfo[]
       ) => void
     ) => () => Electron.IpcRenderer;
     onCombinedAchievementsUnlocked: (
@@ -540,6 +868,30 @@ declare global {
     openMainWindow: () => Promise<void>;
     isMainWindowOpen: () => Promise<boolean>;
 
+    /* Main Window Controls */
+    minimizeMainWindow: () => Promise<void>;
+    toggleMaximizeMainWindow: () => Promise<void>;
+    closeMainWindow: () => Promise<void>;
+    isMainWindowMaximized: () => Promise<boolean>;
+    onWindowMaximizeChange: (cb: (isMaximized: boolean) => void) => () => void;
+
+    /* Big Picture Window */
+    openBigPictureWindow: () => Promise<void>;
+
+    /* Friends Window */
+    openFriendsWindow: () => Promise<void>;
+    minimizeFriendsWindow: () => Promise<void>;
+    closeFriendsWindow: () => Promise<void>;
+    openFriendProfileInMainWindow: (userId: string) => Promise<void>;
+    openAddFriendModalInMainWindow: () => Promise<void>;
+    onOpenAddFriendModal: (cb: () => void) => () => Electron.IpcRenderer;
+    onFriendsUpdated: (cb: () => void) => () => Electron.IpcRenderer;
+    onFriendPresence: (
+      cb: (presence: FriendPresenceSync) => void
+    ) => () => Electron.IpcRenderer;
+    onProfileUpdated: (cb: () => void) => () => Electron.IpcRenderer;
+    onNavigate: (cb: (path: string) => void) => () => Electron.IpcRenderer;
+
     /* Download Options */
     onNewDownloadOptions: (
       cb: (gamesWithNewOptions: { gameId: string; count: number }[]) => void
@@ -563,6 +915,27 @@ declare global {
       values: (sublevelName: string) => Promise<unknown[]>;
       iterator: (sublevelName: string) => Promise<[string, unknown][]>;
     };
+
+    /* Transfer Game */
+    getAvailableDrives: () => Promise<DriveInfo[]>;
+    transferGameFiles: (
+      shop: GameShop,
+      objectId: string,
+      destParent: string
+    ) => Promise<{
+      ok: boolean;
+      error?: string;
+      needed?: number;
+      available?: number;
+      newExePath?: string;
+    }>;
+
+    // Cancel for game transfers
+    cancelGameTransfer: (shop: GameShop, objectId: string) => Promise<void>;
+
+    /* Event listeners for transfer progress */
+    on: (channel: string, listener: (...args: any[]) => void) => void;
+    off: (channel: string, listener: (...args: any[]) => void) => void;
   }
 
   interface Window {

@@ -30,7 +30,7 @@ export class HydraApi {
   private static instance: AxiosInstance;
 
   private static readonly EXPIRATION_OFFSET_IN_MS = 1000 * 60 * 5; // 5 minutes
-  private static readonly ADD_LOG_INTERCEPTOR = false;
+  private static readonly ADD_LOG_INTERCEPTOR = true;
 
   private static secondsToMilliseconds(seconds: number) {
     return seconds * 1000;
@@ -103,7 +103,7 @@ export class HydraApi {
     if (WindowManager.mainWindow) {
       WindowManager.mainWindow.webContents.send("on-signin");
       await clearGamesRemoteIds();
-      uploadGamesBatch();
+      void uploadGamesBatch();
 
       WSClient.close();
       WSClient.connect();
@@ -121,6 +121,7 @@ export class HydraApi {
       subscription: null,
     };
 
+    this.sendSignOutEvent();
     this.post("/auth/logout", {}, { needsAuth: false }).catch(() => {});
   }
 
@@ -230,9 +231,7 @@ export class HydraApi {
   }
 
   private static sendSignOutEvent() {
-    if (WindowManager.mainWindow) {
-      WindowManager.mainWindow.webContents.send("on-signout");
-    }
+    WindowManager.sendToAppWindows("on-signout");
   }
 
   public static async refreshToken() {

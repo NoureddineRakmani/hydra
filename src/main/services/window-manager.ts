@@ -1,60 +1,74 @@
+import { is } from "@electron-toolkit/utils";
+import { isStaging, WINDOW_BACKGROUND_COLOR } from "@main/constants";
+import { db, gamesSublevel, levelKeys } from "@main/level";
+import icon from "@resources/icon.png?asset";
+import trayIcon from "@resources/tray-icon.png?asset";
+import { AuthPage, generateAchievementCustomNotificationTest } from "@shared";
+import type {
+  AchievementCustomNotificationPosition,
+  AchievementNotificationInfo,
+  ScreenState,
+  UserPreferences,
+} from "@types";
 import {
   BrowserWindow,
   Menu,
   MenuItem,
   MenuItemConstructorOptions,
   Tray,
+  WebContentsView,
   app,
   nativeImage,
   screen,
   shell,
 } from "electron";
-import { is } from "@electron-toolkit/utils";
 import { t } from "i18next";
-import path from "node:path";
-import icon from "@resources/icon.png?asset";
-import trayIcon from "@resources/tray-icon.png?asset";
-import { HydraApi } from "./hydra-api";
-import UserAgent from "user-agents";
-import { db, gamesSublevel, levelKeys } from "@main/level";
 import { orderBy, slice } from "lodash-es";
-import type {
-  AchievementCustomNotificationPosition,
-  ScreenState,
-  UserPreferences,
-} from "@types";
-import { AuthPage, generateAchievementCustomNotificationTest } from "@shared";
-import { isStaging, WINDOW_BACKGROUND_COLOR } from "@main/constants";
+import path from "node:path";
+import UserAgent from "user-agents";
+import { HydraApi } from "./hydra-api";
 import { logger } from "./logger";
 
 export class WindowManager {
   public static mainWindow: Electron.BrowserWindow | null = null;
   public static notificationWindow: Electron.BrowserWindow | null = null;
   public static gameLauncherWindow: Electron.BrowserWindow | null = null;
+  private static bigPicture: Electron.BrowserWindow | null = null;
+  private static friendsWindow: Electron.BrowserWindow | null = null;
+  private static authWindow: Electron.BrowserWindow | null = null;
+  private static deferredMainMaximize = false;
 
   private static readonly editorWindows: Map<string, BrowserWindow> = new Map();
 
   private static initialConfigInitializationMainWindow: Electron.BrowserWindowConstructorOptions =
-    {
-      width: 1200,
-      height: 860,
-      minWidth: 1024,
-      minHeight: 860,
+  {
+    width: 1200,
+    height: 860,
+    minWidth: 1024,
+    minHeight: 860,
+    icon,
+    trafficLightPosition: { x: 16, y: 16 },
+    webPreferences: {
+      preload: path.join(__dirname, "../preload/index.mjs"),
+      sandbox: false,
+    },
+    show: false,
+    ...(process.platform === "linux"
+    ? {
+      frame: false,
+      transparent: true,
       backgroundColor: WINDOW_BACKGROUND_COLOR,
-      titleBarStyle: process.platform === "linux" ? "default" : "hidden",
-      icon,
-      trafficLightPosition: { x: 16, y: 16 },
+    }
+    : {
+      backgroundColor: "#1c1c1c",
+      titleBarStyle: "hidden",
       titleBarOverlay: {
         symbolColor: "#DADBE1",
         color: "#00000000",
         height: 34,
       },
-      webPreferences: {
-        preload: path.join(__dirname, "../preload/index.mjs"),
-        sandbox: false,
-      },
-      show: false,
-    };
+    }),
+  };
 
   private static formatVersionNumber(version: string) {
     return version.replaceAll(".", "-");
@@ -94,6 +108,39 @@ export class WindowManager {
     }
   }
 
+  private static disableMainWindowWhileBigPictureIsOpen() {
+    const main = this.mainWindow;
+
+    if (!main || main.isDestroyed()) return;
+
+    main.setFocusable(false);
+    main.setIgnoreMouseEvents(true);
+    main.hide();
+  }
+
+  private static restoreMainWindowAfterBigPictureCloses() {
+    const main = this.mainWindow;
+
+    if (!main || main.isDestroyed()) return;
+
+    main.setIgnoreMouseEvents(false);
+    main.setFocusable(true);
+    main.setSkipTaskbar(false);
+  }
+
+  public static sendToAppWindows(channel: string, ...args: unknown[]) {
+    const windows = [this.mainWindow, this.bigPicture, this.friendsWindow];
+
+    for (const window of windows) {
+      if (!window || window.isDestroyed()) continue;
+      window.webContents.send(channel, ...args);
+    }
+  }
+
+  public static sendDownloadsUpdated() {
+    this.sendToAppWindows("on-downloads-updated");
+  }
+
   private static async saveScreenConfig(configScreenWhenClosed: ScreenState) {
     await db.put(levelKeys.screenState, configScreenWhenClosed, {
       valueEncoding: "json",
@@ -122,8 +169,14 @@ export class WindowManager {
   public static async createMainWindow() {
     if (this.mainWindow) return;
 
+    const userPreferences = await db
+    .get<string, UserPreferences | null>(levelKeys.userPreferences, {
+      valueEncoding: "json",
+    })
+    .catch(() => null);
+
     const { isMaximized = false, ...configWithoutMaximized } =
-      await this.loadScreenConfig();
+    await this.loadScreenConfig();
 
     this.updateInitialConfig(configWithoutMaximized);
 
@@ -131,7 +184,26 @@ export class WindowManager {
       this.initialConfigInitializationMainWindow
     );
 
-    if (isMaximized) {
+    this.deferredMainMaximize = false;
+
+    const emitMaximizeState = () => {
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.webContents.send(
+          "on-window-maximize-change",
+          this.mainWindow.isMaximized()
+        );
+      }
+    };
+    this.mainWindow.on("maximize", emitMaximizeState);
+    this.mainWindow.on("unmaximize", emitMaximizeState);
+
+    if (userPreferences?.launchInBigPicture) {
+      this.mainWindow.setOpacity(0);
+      this.mainWindow.setSkipTaskbar(true);
+      if (isMaximized) {
+        this.deferredMainMaximize = true;
+      }
+    } else if (isMaximized) {
       this.mainWindow.maximize();
     }
 
@@ -205,12 +277,6 @@ export class WindowManager {
       }
     );
 
-    const userPreferences = await db
-      .get<string, UserPreferences | null>(levelKeys.userPreferences, {
-        valueEncoding: "json",
-      })
-      .catch(() => null);
-
     const initialHash = userPreferences?.launchToLibraryPage ? "library" : "";
 
     this.loadMainWindowURL(initialHash);
@@ -219,7 +285,11 @@ export class WindowManager {
     this.mainWindow.on("ready-to-show", () => {
       if (!app.isPackaged || isStaging)
         WindowManager.mainWindow?.webContents.openDevTools();
-      WindowManager.mainWindow?.show();
+      if (userPreferences?.launchInBigPicture) {
+        void WindowManager.openBigPictureWindow();
+      } else {
+        WindowManager.mainWindow?.show();
+      }
     });
 
     this.mainWindow.on("close", async () => {
@@ -239,14 +309,14 @@ export class WindowManager {
         const lastBounds = mainWindow.getBounds();
         const isMaximized = mainWindow.isMaximized() ?? false;
         const screenConfig = isMaximized
-          ? {
-              x: undefined,
-              y: undefined,
-              height: this.initialConfigInitializationMainWindow.height ?? 860,
-              width: this.initialConfigInitializationMainWindow.width ?? 1200,
-              isMaximized: true,
-            }
-          : { ...lastBounds, isMaximized };
+        ? {
+          x: undefined,
+          y: undefined,
+          height: this.initialConfigInitializationMainWindow.height ?? 860,
+          width: this.initialConfigInitializationMainWindow.width ?? 1200,
+          isMaximized: true,
+        }
+        : { ...lastBounds, isMaximized };
 
         await this.saveScreenConfig(screenConfig);
       }
@@ -262,50 +332,330 @@ export class WindowManager {
     });
   }
 
+  public static async openBigPictureWindow() {
+    if (this.bigPicture) {
+      this.bigPicture.focus();
+      return;
+    }
+
+    const userPreferences = await db
+    .get<string, UserPreferences | null>(levelKeys.userPreferences, {
+      valueEncoding: "json",
+    })
+    .catch(() => null);
+
+    const targetDisplay = this.mainWindow?.isDestroyed()
+    ? null
+    : this.mainWindow
+    ? screen.getDisplayMatching(this.mainWindow.getBounds())
+    : screen.getPrimaryDisplay();
+    const targetBounds =
+    targetDisplay?.bounds ?? screen.getPrimaryDisplay().bounds;
+
+    this.bigPicture = new BrowserWindow({
+      x: targetBounds.x,
+      y: targetBounds.y,
+      width: targetBounds.width,
+      height: targetBounds.height,
+      backgroundColor: "#0a0a0a",
+      icon,
+      frame: false,
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, "../preload/index.mjs"),
+                                        sandbox: false,
+      },
+    });
+
+    this.bigPicture.removeMenu();
+
+    if (!app.isPackaged || isStaging) {
+      this.bigPicture.webContents.openDevTools();
+    }
+
+    const bigPictureInitialHash = userPreferences?.launchToLibraryPage
+    ? "big-picture/library"
+    : "big-picture";
+
+    this.loadWindowURL(this.bigPicture, bigPictureInitialHash);
+
+    this.bigPicture.once("ready-to-show", () => {
+      const main = this.mainWindow;
+      if (main && !main.isDestroyed()) {
+        main.setOpacity(1);
+        this.disableMainWindowWhileBigPictureIsOpen();
+      }
+      this.bigPicture?.show();
+      this.bigPicture?.setFullScreen(true);
+      this.bigPicture?.focus();
+    });
+
+    this.bigPicture.on("closed", () => {
+      this.bigPicture = null;
+      const main = this.mainWindow;
+      if (main && !main.isDestroyed()) {
+        this.restoreMainWindowAfterBigPictureCloses();
+        if (WindowManager.deferredMainMaximize) {
+          main.maximize();
+          WindowManager.deferredMainMaximize = false;
+        }
+        main.show();
+        main.focus();
+      }
+    });
+  }
+
+  public static openFriendsWindow() {
+    if (this.friendsWindow) {
+      if (this.friendsWindow.isMinimized()) {
+        this.friendsWindow.restore();
+      }
+      this.friendsWindow.focus();
+      return;
+    }
+
+    this.friendsWindow = new BrowserWindow({
+      width: 420,
+      height: 780,
+      minWidth: 420,
+      maxWidth: 420,
+      minHeight: 560,
+      maximizable: false,
+      backgroundColor: "#1c1c1c",
+      // No native frame/controls — the renderer draws its own minimize and
+      // close buttons in the title bar (see friends-window.tsx).
+      frame: false,
+      icon,
+      webPreferences: {
+        preload: path.join(__dirname, "../preload/index.mjs"),
+                                           sandbox: false,
+      },
+      show: false,
+    });
+
+    this.friendsWindow.removeMenu();
+
+    this.loadWindowURL(this.friendsWindow, "friends-window");
+
+    this.friendsWindow.once("ready-to-show", () => {
+      this.friendsWindow?.show();
+      if (!app.isPackaged || isStaging) {
+        this.friendsWindow?.webContents.openDevTools();
+      }
+    });
+
+    this.friendsWindow.on("closed", () => {
+      this.friendsWindow = null;
+    });
+  }
+
+  public static minimizeFriendsWindow() {
+    if (this.friendsWindow && !this.friendsWindow.isDestroyed()) {
+      this.friendsWindow.minimize();
+    }
+  }
+
+  public static closeFriendsWindow() {
+    if (this.friendsWindow && !this.friendsWindow.isDestroyed()) {
+      this.friendsWindow.close();
+    }
+    this.friendsWindow = null;
+  }
+
+  public static minimizeMainWindow() {
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.minimize();
+    }
+  }
+
+  public static toggleMaximizeMainWindow() {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    if (this.mainWindow.isMaximized()) {
+      this.mainWindow.unmaximize();
+    } else {
+      this.mainWindow.maximize();
+    }
+  }
+
+  public static closeMainWindow() {
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.close();
+    }
+  }
+
+  public static isMainWindowMaximized() {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
+    return this.mainWindow.isMaximized();
+  }
+
+  private static focusMainWindow() {
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      if (this.mainWindow.isMinimized()) this.mainWindow.restore();
+      this.mainWindow.show();
+      this.mainWindow.focus();
+    } else {
+      this.createMainWindow();
+    }
+  }
+
+  public static focusMainWindowAndNavigate(path: string) {
+    this.focusMainWindow();
+    this.mainWindow?.webContents.send("on-navigate", path);
+  }
+
+  public static openAddFriendModalInMainWindow() {
+    this.focusMainWindow();
+    this.mainWindow?.webContents.send("on-open-add-friend-modal");
+  }
+
+  private static readonly AUTH_WINDOW_WIDTH = 600;
+  private static readonly AUTH_WINDOW_HEIGHT = 640;
+  private static readonly AUTH_WINDOW_TITLE_BAR_HEIGHT = 34;
+  private static readonly AUTH_WINDOW_BORDER = 1;
+
+  private static bindAuthNavigation(
+    contents: Electron.WebContents,
+    closeWindow: () => void
+  ) {
+    contents.on("will-navigate", (_event, url) => {
+      if (url.startsWith("hydralauncher://auth")) {
+        closeWindow();
+
+        HydraApi.handleExternalAuth(url);
+        return;
+      }
+
+      if (url.startsWith("hydralauncher://update-account")) {
+        closeWindow();
+
+        WindowManager.sendToAppWindows("on-account-updated");
+      }
+    });
+  }
+
   public static openAuthWindow(page: AuthPage, searchParams: URLSearchParams) {
-    if (this.mainWindow) {
-      const authWindow = new BrowserWindow({
-        width: 600,
-        height: 640,
-        backgroundColor: WINDOW_BACKGROUND_COLOR,
-        parent: this.mainWindow,
-        modal: true,
-        show: false,
-        maximizable: false,
-        resizable: false,
-        minimizable: false,
-        webPreferences: {
-          sandbox: false,
-          nodeIntegrationInSubFrames: true,
-        },
-      });
+    const parentWindow =
+    this.bigPicture && !this.bigPicture.isDestroyed()
+    ? this.bigPicture
+    : this.mainWindow;
 
-      authWindow.removeMenu();
+    if (!parentWindow || parentWindow.isDestroyed()) return;
 
-      if (!app.isPackaged) authWindow.webContents.openDevTools();
+    const authUrl = `${import.meta.env.MAIN_VITE_AUTH_URL}${page}?${searchParams.toString()}`;
 
-      authWindow.loadURL(
-        `${import.meta.env.MAIN_VITE_AUTH_URL}${page}?${searchParams.toString()}`
-      );
+    if (process.platform === "linux") {
+      this.openLinuxAuthWindow(parentWindow, authUrl);
+      return;
+    }
 
-      authWindow.once("ready-to-show", () => {
-        authWindow.show();
-      });
+    const authWindow = new BrowserWindow({
+      width: this.AUTH_WINDOW_WIDTH,
+      height: this.AUTH_WINDOW_HEIGHT,
+      backgroundColor: "#1c1c1c",
+      parent: parentWindow,
+      modal: true,
+      show: false,
+      maximizable: false,
+      resizable: false,
+      minimizable: false,
+      webPreferences: {
+        sandbox: false,
+        nodeIntegrationInSubFrames: true,
+      },
+    });
 
-      authWindow.webContents.on("will-navigate", (_event, url) => {
-        if (url.startsWith("hydralauncher://auth")) {
-          authWindow.close();
+    authWindow.removeMenu();
 
-          HydraApi.handleExternalAuth(url);
-          return;
-        }
+    if (!app.isPackaged) authWindow.webContents.openDevTools();
 
-        if (url.startsWith("hydralauncher://update-account")) {
-          authWindow.close();
+    authWindow.loadURL(authUrl);
 
-          WindowManager.mainWindow?.webContents.send("on-account-updated");
-        }
-      });
+    authWindow.once("ready-to-show", () => {
+      authWindow.show();
+    });
+
+    authWindow.once("closed", () => {
+      if (!parentWindow.isDestroyed()) {
+        parentWindow.focus();
+      }
+    });
+
+    this.bindAuthNavigation(authWindow.webContents, () => authWindow.close());
+  }
+
+  private static openLinuxAuthWindow(
+    parentWindow: Electron.BrowserWindow,
+    authUrl: string
+  ) {
+    const authWindow = new BrowserWindow({
+      width: this.AUTH_WINDOW_WIDTH + this.AUTH_WINDOW_BORDER * 2,
+      height:
+      this.AUTH_WINDOW_HEIGHT +
+      this.AUTH_WINDOW_TITLE_BAR_HEIGHT +
+      this.AUTH_WINDOW_BORDER * 2,
+      parent: parentWindow,
+      modal: true,
+      show: false,
+      maximizable: false,
+      resizable: false,
+      frame: false,
+      icon,
+      backgroundColor: "#1c1c1c",
+      webPreferences: {
+        preload: path.join(__dirname, "../preload/index.mjs"),
+                                         sandbox: false,
+      },
+    });
+
+    this.authWindow = authWindow;
+
+    authWindow.removeMenu();
+
+    const authView = new WebContentsView({
+      webPreferences: {
+        sandbox: false,
+        nodeIntegrationInSubFrames: true,
+      },
+    });
+
+    authWindow.contentView.addChildView(authView);
+    authView.setBounds({
+      x: this.AUTH_WINDOW_BORDER,
+      y: this.AUTH_WINDOW_BORDER + this.AUTH_WINDOW_TITLE_BAR_HEIGHT,
+      width: this.AUTH_WINDOW_WIDTH,
+      height: this.AUTH_WINDOW_HEIGHT,
+    });
+
+    this.loadWindowURL(authWindow, "auth-window");
+    authView.webContents.loadURL(authUrl);
+
+    if (!app.isPackaged) authView.webContents.openDevTools();
+
+    authWindow.once("ready-to-show", () => {
+      authWindow.show();
+    });
+
+    authWindow.once("closed", () => {
+      this.authWindow = null;
+      if (!parentWindow.isDestroyed()) {
+        parentWindow.focus();
+      }
+    });
+
+    this.bindAuthNavigation(authView.webContents, () => {
+      if (!authWindow.isDestroyed()) authWindow.close();
+    });
+  }
+
+  public static minimizeAuthWindow() {
+    if (this.authWindow && !this.authWindow.isDestroyed()) {
+      this.authWindow.minimize();
+    }
+  }
+
+  public static closeAuthWindow() {
+    if (this.authWindow && !this.authWindow.isDestroyed()) {
+      this.authWindow.close();
     }
   }
 
@@ -371,10 +721,30 @@ export class WindowManager {
     };
   }
 
+  public static sendAchievementToFocusedWindow(
+    position: AchievementCustomNotificationPosition,
+    achievements: AchievementNotificationInfo[]
+  ): boolean {
+    const candidates = [this.bigPicture, this.mainWindow];
+
+    for (const window of candidates) {
+      if (window && !window.isDestroyed() && window.isFocused()) {
+        window.webContents.send(
+          "on-achievement-unlocked-in-app",
+          position,
+          achievements
+        );
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   public static async createNotificationWindow() {
     if (this.notificationWindow) return;
 
-    if (process.platform === "darwin") {
+    if (process.platform === "darwin" || process.platform === "linux") {
       return;
     }
 
@@ -411,7 +781,7 @@ export class WindowManager {
       y,
       webPreferences: {
         preload: path.join(__dirname, "../preload/index.mjs"),
-        sandbox: false,
+                                                sandbox: false,
       },
     });
     this.notificationWindow.setIgnoreMouseEvents(true);
@@ -433,20 +803,28 @@ export class WindowManager {
     );
 
     const language = userPreferences.language ?? "en";
+    const position =
+    userPreferences.achievementCustomNotificationPosition ?? "top-left";
+    const testAchievements = [
+      generateAchievementCustomNotificationTest(t, language),
+      generateAchievementCustomNotificationTest(t, language, {
+        isRare: true,
+        isHidden: true,
+      }),
+      generateAchievementCustomNotificationTest(t, language, {
+        isPlatinum: true,
+      }),
+    ];
+
+    if (process.platform === "linux") {
+      this.sendAchievementToFocusedWindow(position, testAchievements);
+      return;
+    }
 
     this.notificationWindow?.webContents.send(
       "on-achievement-unlocked",
-      userPreferences.achievementCustomNotificationPosition ?? "top-left",
-      [
-        generateAchievementCustomNotificationTest(t, language),
-        generateAchievementCustomNotificationTest(t, language, {
-          isRare: true,
-          isHidden: true,
-        }),
-        generateAchievementCustomNotificationTest(t, language, {
-          isPlatinum: true,
-        }),
-      ]
+      position,
+      testAchievements
     );
   }
 
@@ -484,7 +862,7 @@ export class WindowManager {
         },
         webPreferences: {
           preload: path.join(__dirname, "../preload/index.mjs"),
-          sandbox: false,
+                                             sandbox: false,
         },
         show: false,
       });
@@ -561,7 +939,7 @@ export class WindowManager {
       skipTaskbar: false,
       webPreferences: {
         preload: path.join(__dirname, "../preload/index.mjs"),
-        sandbox: false,
+                                                sandbox: false,
       },
       show: false,
     });
@@ -596,6 +974,11 @@ export class WindowManager {
   }
 
   public static openMainWindow() {
+    if (this.bigPicture && !this.bigPicture.isDestroyed()) {
+      this.bigPicture.focus();
+      return;
+    }
+
     if (this.mainWindow) {
       this.mainWindow.show();
       if (this.mainWindow.isMinimized()) {
@@ -611,6 +994,10 @@ export class WindowManager {
     if (!this.mainWindow) this.createMainWindow();
     this.loadMainWindowURL(hash);
 
+    if (this.bigPicture && !this.bigPicture.isDestroyed()) {
+      return;
+    }
+
     if (this.mainWindow?.isMinimized()) this.mainWindow.restore();
     this.mainWindow?.focus();
   }
@@ -620,8 +1007,8 @@ export class WindowManager {
 
     if (process.platform === "darwin") {
       const macIcon = nativeImage
-        .createFromPath(trayIcon)
-        .resize({ width: 24, height: 24 });
+      .createFromPath(trayIcon)
+      .resize({ width: 24, height: 24 });
       tray = new Tray(macIcon);
     } else {
       tray = new Tray(trayIcon);
@@ -629,29 +1016,29 @@ export class WindowManager {
 
     const updateSystemTray = async () => {
       const games = await gamesSublevel
-        .values()
-        .all()
-        .then((games) => {
-          const filteredGames = games.filter(
-            (game) =>
-              !game.isDeleted && game.executablePath && game.lastTimePlayed
-          );
+      .values()
+      .all()
+      .then((games) => {
+        const filteredGames = games.filter(
+          (game) =>
+          !game.isDeleted && game.executablePath && game.lastTimePlayed
+        );
 
-          const sortedGames = orderBy(filteredGames, "lastTimePlayed", "desc");
+        const sortedGames = orderBy(filteredGames, "lastTimePlayed", "desc");
 
-          return slice(sortedGames, 0, 6);
-        });
+        return slice(sortedGames, 0, 6);
+      });
 
       const recentlyPlayedGames: Array<MenuItemConstructorOptions | MenuItem> =
-        games.map(({ title, executablePath }) => ({
-          label: title.length > 18 ? `${title.slice(0, 18)}…` : title,
-          type: "normal",
-          click: async () => {
-            if (!executablePath) return;
+      games.map(({ title, executablePath }) => ({
+        label: title.length > 18 ? `${title.slice(0, 18)}…` : title,
+                                                type: "normal",
+                                                click: async () => {
+                                                  if (!executablePath) return;
 
-            shell.openPath(executablePath);
-          },
-        }));
+                                                  shell.openPath(executablePath);
+                                                },
+      }));
 
       const contextMenu = Menu.buildFromTemplate([
         {

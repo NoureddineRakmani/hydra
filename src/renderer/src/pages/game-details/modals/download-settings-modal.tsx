@@ -1,12 +1,13 @@
 import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { Trans, useTranslation } from "react-i18next";
+  CheckCircleFillIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  DownloadIcon,
+  FileDirectoryIcon,
+  FileIcon,
+  PlusIcon,
+  SyncIcon,
+} from "@primer/octicons-react";
 import {
   Badge,
   Button,
@@ -16,23 +17,6 @@ import {
   SelectField,
   TextField,
 } from "@renderer/components";
-import {
-  DownloadIcon,
-  SyncIcon,
-  CheckCircleFillIcon,
-  CheckIcon,
-  PlusIcon,
-  ChevronDownIcon,
-  FileDirectoryIcon,
-  FileIcon,
-} from "@primer/octicons-react";
-import {
-  DownloadError,
-  Downloader,
-  formatBytes,
-  getDownloadersForUri,
-} from "@shared";
-import type { GameRepack, TorrentFile, TorrentFilesResponse } from "@types";
 import { DOWNLOADER_NAME } from "@renderer/constants";
 import {
   useAppSelector,
@@ -40,10 +24,29 @@ import {
   useFeature,
   useToast,
 } from "@renderer/hooks";
+import {
+  DownloadError,
+  Downloader,
+  formatBytes,
+  getDownloadersForUri,
+} from "@shared";
+import type { GameRepack, TorrentFile, TorrentFilesResponse } from "@types";
 import { motion } from "framer-motion";
+import {
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { Tooltip } from "react-tooltip";
-import { RealDebridInfoModal } from "./real-debrid-info-modal";
 import "./download-settings-modal.scss";
+import { RealDebridInfoModal } from "./real-debrid-info-modal";
+import { gameDetailsContext } from "@renderer/context";
+import { platformToSystem } from "@renderer/helpers";
 
 export interface DownloadSettingsModalProps {
   visible: boolean;
@@ -55,7 +58,9 @@ export interface DownloadSettingsModalProps {
     automaticallyExtract: boolean,
     addToQueueOnly?: boolean,
     fileIndices?: number[],
-    selectedFilesSize?: number | null
+    selectedFilesSize?: number | null,
+    automaticallyDeleteArchiveFiles?: boolean,
+    signal?: AbortSignal
   ) => Promise<{ ok: boolean; error?: string }>;
   repack: GameRepack | null;
 }
@@ -235,6 +240,13 @@ export function DownloadSettingsModal({
 }: Readonly<DownloadSettingsModalProps>) {
   const { t } = useTranslation("game_details");
 
+  const { game, shopDetails, shop } = useContext(gameDetailsContext);
+
+  const emulatorSystem = useMemo(() => {
+    if (shop !== "launchbox") return null;
+    return platformToSystem(game?.platform ?? shopDetails?.platform ?? null);
+  }, [shop, game?.platform, shopDetails?.platform]);
+
   const userPreferences = useAppSelector(
     (state) => state.userPreferences.value
   );
@@ -249,6 +261,12 @@ export function DownloadSettingsModal({
   const [downloadStarting, setDownloadStarting] = useState(false);
   const [automaticExtractionEnabled, setAutomaticExtractionEnabled] = useState(
     userPreferences?.extractFilesByDefault ?? true
+  );
+  const [
+    deleteArchiveFilesAfterExtraction,
+    setDeleteArchiveFilesAfterExtraction,
+  ] = useState(
+    userPreferences?.deleteArchiveFilesAfterExtractionByDefault ?? false
   );
   const [selectedDownloader, setSelectedDownloader] =
     useState<Downloader | null>(null);
@@ -276,6 +294,9 @@ export function DownloadSettingsModal({
   const torrentFilesCache = useRef<Map<string, TorrentFilesResponse>>(
     new Map()
   );
+  const torrentFilesRequestIdRef = useRef(0);
+  const activeStartRequestIdRef = useRef(0);
+  const startAbortControllerRef = useRef<AbortController | null>(null);
 
   const { isFeatureEnabled, Feature } = useFeature();
 
@@ -450,20 +471,61 @@ export function DownloadSettingsModal({
   );
 
   useEffect(() => {
-    if (userPreferences?.downloadsPath) {
-      setSelectedPath(userPreferences.downloadsPath);
-    } else {
-      globalThis.electron
-        .getDefaultDownloadsPath()
-        .then((defaultDownloadsPath) => setSelectedPath(defaultDownloadsPath));
-    }
+    let cancelled = false;
+
+    const resolveDefaultPath = async () => {
+      const romPath = emulatorSystem
+        ? await globalThis.electron
+            .getEmulatorConfigs()
+            .then(
+              (configs) =>
+                configs[emulatorSystem]?.romFolders?.[0]?.path ?? null
+            )
+            .catch(() => null)
+        : null;
+
+      if (cancelled) return;
+
+      if (romPath) {
+        setSelectedPath(romPath);
+      } else if (userPreferences?.downloadsPath) {
+        setSelectedPath(userPreferences.downloadsPath);
+      } else {
+        const defaultDownloadsPath =
+          await globalThis.electron.getDefaultDownloadsPath();
+        if (!cancelled) setSelectedPath(defaultDownloadsPath);
+      }
+    };
+
+    void resolveDefaultPath();
 
     const availableDownloaders = downloadOptions
       .filter((option) => option.isAvailable)
       .map((option) => option.downloader);
 
     setSelectedDownloader(getDefaultDownloader(availableDownloaders));
-  }, [getDefaultDownloader, userPreferences?.downloadsPath, downloadOptions]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    getDefaultDownloader,
+    userPreferences?.downloadsPath,
+    downloadOptions,
+    emulatorSystem,
+  ]);
+
+  useEffect(() => {
+    if (visible) {
+      setDeleteArchiveFilesAfterExtraction(
+        userPreferences?.deleteArchiveFilesAfterExtractionByDefault ?? false
+      );
+      setAutomaticExtractionEnabled(
+        userPreferences?.extractFilesByDefault ?? true
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
 
   const torrentFilesByIndex = useMemo(() => {
     const fileMap = new Map<number, TorrentFile>();
@@ -684,13 +746,31 @@ export function DownloadSettingsModal({
     torrentFiles.length > 0 &&
     selectedTorrentIndices.size === torrentFiles.length;
 
+  const resetTorrentStepState = useCallback(() => {
+    torrentFilesRequestIdRef.current += 1;
+    setTorrentFiles([]);
+    setSelectedTorrentIndices(new Set());
+    setExpandedFolderIds(new Set());
+    setTorrentFilesError(null);
+    setTorrentFilesLoading(false);
+    setTorrentFileSearch("");
+    setShowTorrentStepModal(false);
+  }, []);
+
   const fetchTorrentFiles = useCallback(async () => {
     if (!selectedMagnetUri) {
       return;
     }
 
+    const requestId = ++torrentFilesRequestIdRef.current;
+    const isRequestOutdated = () =>
+      requestId !== torrentFilesRequestIdRef.current ||
+      !shouldShowTorrentFiles ||
+      selectedMagnetUri === null;
+
     const cached = torrentFilesCache.current.get(selectedMagnetUri);
     if (cached) {
+      if (isRequestOutdated()) return;
       setTorrentFiles(cached.files);
       setSelectedTorrentIndices(
         new Set(cached.files.map((file) => file.index))
@@ -711,6 +791,7 @@ export function DownloadSettingsModal({
     try {
       response = await window.electron.getTorrentFiles(selectedMagnetUri);
     } catch {
+      if (isRequestOutdated()) return;
       setTorrentFiles([]);
       setSelectedTorrentIndices(new Set());
       setExpandedFolderIds(new Set());
@@ -720,6 +801,7 @@ export function DownloadSettingsModal({
     }
 
     if (!response.ok) {
+      if (isRequestOutdated()) return;
       setTorrentFiles([]);
       setSelectedTorrentIndices(new Set());
       setExpandedFolderIds(new Set());
@@ -729,6 +811,8 @@ export function DownloadSettingsModal({
       setTorrentFilesLoading(false);
       return;
     }
+
+    if (isRequestOutdated()) return;
 
     if (torrentFilesCache.current.size >= 20) {
       const oldestKey = torrentFilesCache.current.keys().next().value;
@@ -745,27 +829,26 @@ export function DownloadSettingsModal({
     setExpandedFolderIds(new Set());
     setTorrentFilesError(null);
     setTorrentFilesLoading(false);
-  }, [selectedMagnetUri]);
+  }, [selectedMagnetUri, shouldShowTorrentFiles]);
 
   useEffect(() => {
     if (!shouldShowTorrentFiles) {
-      setTorrentFiles([]);
-      setSelectedTorrentIndices(new Set());
-      setExpandedFolderIds(new Set());
-      setTorrentFilesError(null);
-      setTorrentFilesLoading(false);
-      setTorrentFileSearch("");
+      resetTorrentStepState();
       return;
     }
 
     fetchTorrentFiles().catch(() => undefined);
-  }, [fetchTorrentFiles, shouldShowTorrentFiles]);
+  }, [fetchTorrentFiles, resetTorrentStepState, shouldShowTorrentFiles]);
 
   useEffect(() => {
     if (!visible) {
-      setShowTorrentStepModal(false);
+      activeStartRequestIdRef.current += 1;
+      startAbortControllerRef.current?.abort();
+      startAbortControllerRef.current = null;
+      setDownloadStarting(false);
+      resetTorrentStepState();
     }
-  }, [visible]);
+  }, [resetTorrentStepState, visible]);
 
   useEffect(() => {
     if (!canOpenTorrentStep && showTorrentStepModal) {
@@ -890,6 +973,11 @@ export function DownloadSettingsModal({
     totalSelectedSize?: number
   ) => {
     if (repack) {
+      const requestId = ++activeStartRequestIdRef.current;
+      startAbortControllerRef.current?.abort();
+      const abortController = new AbortController();
+      startAbortControllerRef.current = abortController;
+
       setDownloadStarting(true);
 
       try {
@@ -900,25 +988,53 @@ export function DownloadSettingsModal({
           automaticExtractionEnabled,
           hasActiveDownload,
           selectedFileIndices,
-          totalSelectedSize
+          totalSelectedSize,
+          deleteArchiveFilesAfterExtraction,
+          abortController.signal
         );
 
+        if (
+          requestId !== activeStartRequestIdRef.current ||
+          abortController.signal.aborted
+        ) {
+          return;
+        }
+
         if (response.ok) {
-          setShowTorrentStepModal(false);
+          resetTorrentStepState();
           onClose();
           return;
         } else if (response.error) {
           showErrorToast(t("download_error"), t(response.error), 4_000);
         }
       } catch (error) {
+        if (
+          abortController.signal.aborted ||
+          (error instanceof Error && error.name === "AbortError")
+        ) {
+          return;
+        }
+
         if (error instanceof Error) {
           showErrorToast(t("download_error"), error.message, 4_000);
         }
       } finally {
-        setDownloadStarting(false);
+        if (requestId === activeStartRequestIdRef.current) {
+          startAbortControllerRef.current = null;
+          setDownloadStarting(false);
+        }
       }
     }
   };
+
+  const handleCloseModal = useCallback(() => {
+    activeStartRequestIdRef.current += 1;
+    startAbortControllerRef.current?.abort();
+    startAbortControllerRef.current = null;
+    setDownloadStarting(false);
+    resetTorrentStepState();
+    onClose();
+  }, [onClose, resetTorrentStepState]);
 
   const handlePrimaryButtonClick = async () => {
     await handleStartClick();
@@ -1117,7 +1233,7 @@ export function DownloadSettingsModal({
       description={t("space_left_on_disk", {
         space: formatBytes(diskFreeSpace ?? 0),
       })}
-      onClose={onClose}
+      onClose={handleCloseModal}
     >
       <div className="download-settings-modal__container">
         <div className="download-settings-modal__downloads-path-field">
@@ -1322,6 +1438,16 @@ export function DownloadSettingsModal({
           checked={automaticExtractionEnabled}
           onChange={() =>
             setAutomaticExtractionEnabled(!automaticExtractionEnabled)
+          }
+        />
+
+        <CheckboxField
+          label={t("delete_archive_files_after_extraction")}
+          checked={deleteArchiveFilesAfterExtraction}
+          onChange={() =>
+            setDeleteArchiveFilesAfterExtraction(
+              !deleteArchiveFilesAfterExtraction
+            )
           }
         />
 

@@ -1,21 +1,49 @@
 import { WindowManager } from "./window-manager";
+import { updateGameExecutablePath } from "@main/helpers/update-executable-path";
 import { createGame, trackGamePlaytime } from "./library-sync";
 import type { Game, GameRunning, UserPreferences } from "@types";
 import axios from "axios";
 import { db, gamesSublevel, levelKeys } from "@main/level";
 import { CloudSync } from "./cloud-sync";
-import { logger } from "./logger";
+import { logger, networkLogger } from "./logger";
 import { PowerSaveBlockerManager } from "./power-save-blocker";
 import path from "node:path";
 import { AchievementWatcherManager } from "./achievements/achievement-watcher-manager";
-import { MAIN_LOOP_INTERVAL } from "@main/constants";
+import { INTERVALS } from "@main/constants";
 import { Wine } from "./wine";
 import { NativeAddon } from "./native-addon";
+import { emulatorSessions } from "./emulators/emulator-session-tracker";
+import { launchedGamePids } from "./launched-game-pids";
+import {
+  hasLaunchedPidMatch,
+  hasLinuxNativeOrAppImageMatch,
+  type LinuxProcessInfo,
+} from "./linux-process-match";
+import { isWindowsBatchFile } from "@main/helpers/windows-batch-command";
 
 export const gamesPlaytime = new Map<
   string,
   { lastTick: number; firstTick: number; lastSyncTick: number }
 >();
+
+export const getGamesRunning = () => {
+  const now = performance.now();
+  const gamesRunning = Array.from(gamesPlaytime.entries()).map((entry) => {
+    return {
+      id: entry[0],
+      sessionDurationInMillis: now - entry[1].firstTick,
+    } as Pick<GameRunning, "id" | "sessionDurationInMillis">;
+  });
+
+  for (const [gameKey, session] of emulatorSessions) {
+    gamesRunning.push({
+      id: gameKey,
+      sessionDurationInMillis: now - session.startedAt,
+    });
+  }
+
+  return gamesRunning;
+};
 
 interface ExecutableInfo {
   name: string;
@@ -27,17 +55,31 @@ interface GameExecutables {
   [key: string]: ExecutableInfo[];
 }
 
-interface LinuxProcessInfo {
-  name: string;
-  cwd: string;
-  exe: string;
-  steamCompatDataPath: string | null;
-}
-
-const TICKS_TO_UPDATE_API = (3 * 60 * 1000) / MAIN_LOOP_INTERVAL; // 3 minutes
+const TICKS_TO_UPDATE_API = (3 * 60 * 1000) / INTERVALS.processWatcher; // 3 minutes
 let currentTick = 1;
 
 const platform = process.platform;
+
+const logPlaytimeTrace = (
+  event: string,
+  game: Game,
+  payload?: Record<string, unknown>
+) => {
+  networkLogger.info("[playtime-trace]", event, {
+    gameKey: levelKeys.game(game.shop, game.objectId),
+    shop: game.shop,
+    objectId: game.objectId,
+    remoteId: game.remoteId,
+    localPlayTimeInMilliseconds: Math.trunc(game.playTimeInMilliseconds ?? 0),
+    unsyncedDeltaPlayTimeInMilliseconds:
+      game.unsyncedDeltaPlayTimeInMilliseconds ?? 0,
+    lastTimePlayed:
+      game.lastTimePlayed instanceof Date
+        ? game.lastTimePlayed.toISOString()
+        : game.lastTimePlayed,
+    ...payload,
+  });
+};
 
 const getGameExecutables = async () => {
   const gameExecutables = (
@@ -104,8 +146,7 @@ const findGamePathByProcess = async (
 
           if (game) {
             const updatedGame: Game = {
-              ...game,
-              executablePath: path,
+              ...updateGameExecutablePath(game, path),
             };
 
             if (process.platform === "linux" && winePrefixMap.has(path)) {
@@ -122,38 +163,17 @@ const findGamePathByProcess = async (
 };
 
 const getSystemProcessMap = async () => {
-  const processes = NativeAddon.listProcesses();
+  const {
+    processMap: rawMap,
+    winePrefixMap: rawWineMap,
+    linuxProcesses,
+  } = await NativeAddon.getSystemProcessMap();
 
-  const processMap = new Map<string, Set<string>>();
-  const winePrefixMap = new Map<string, string>();
-  const linuxProcesses: LinuxProcessInfo[] = [];
+  const processMap = new Map<string, Set<string>>(
+    Object.entries(rawMap).map(([k, v]) => [k, new Set(v)])
+  );
 
-  processes.forEach((process) => {
-    const key = process.name?.toLowerCase();
-    const value =
-      platform === "win32"
-        ? process.exe
-        : path.join(process.cwd ?? "", process.name ?? "");
-
-    if (!key || !value) return;
-
-    const STEAM_COMPAT_DATA_PATH = process.environ?.STEAM_COMPAT_DATA_PATH;
-    if (STEAM_COMPAT_DATA_PATH) {
-      winePrefixMap.set(value, STEAM_COMPAT_DATA_PATH);
-    }
-
-    if (platform === "linux") {
-      linuxProcesses.push({
-        name: key,
-        cwd: (process.cwd ?? "").toLowerCase(),
-        exe: (process.exe ?? "").toLowerCase(),
-        steamCompatDataPath: STEAM_COMPAT_DATA_PATH?.toLowerCase() ?? null,
-      });
-    }
-
-    const currentSet = processMap.get(key) ?? new Set();
-    processMap.set(key, currentSet.add(value));
-  });
+  const winePrefixMap = new Map<string, string>(Object.entries(rawWineMap));
 
   return { processMap, winePrefixMap, linuxProcesses };
 };
@@ -214,6 +234,10 @@ export const watchProcesses = async () => {
   const { processMap, winePrefixMap, linuxProcesses } =
     await getSystemProcessMap();
 
+  const pidToProcess = new Map<number, LinuxProcessInfo>(
+    linuxProcesses.map((process) => [process.pid, process])
+  );
+
   for (const game of games) {
     const gameKey = levelKeys.game(game.shop, game.objectId);
     const executablePath = game.executablePath;
@@ -225,17 +249,37 @@ export const watchProcesses = async () => {
       continue;
     }
 
-    const executable = executablePath
-      .slice(executablePath.lastIndexOf(platform === "win32" ? "\\" : "/") + 1)
-      .toLowerCase();
+    const trackingPaths = game.trackingExecutablePaths?.filter(Boolean) ?? [];
 
-    let hasProcess = processMap.get(executable)?.has(executablePath) ?? false;
+    let matchPaths: string[];
+    if (isWindowsBatchFile(executablePath)) {
+      matchPaths = trackingPaths.length ? trackingPaths : [executablePath];
+    } else {
+      matchPaths = [executablePath, ...trackingPaths];
+    }
+
+    let hasProcess = matchPaths.some((matchPath) => {
+      const executable = matchPath
+        .slice(matchPath.lastIndexOf(platform === "win32" ? "\\" : "/") + 1)
+        .toLowerCase();
+
+      if (processMap.get(executable)?.has(matchPath)) return true;
+
+      if (platform === "linux") {
+        return (
+          hasLinuxNativeOrAppImageMatch(matchPath, linuxProcesses) ||
+          hasLinuxCompatibilityProcessMatch(game, matchPath, linuxProcesses)
+        );
+      }
+
+      return false;
+    });
 
     if (!hasProcess && platform === "linux") {
-      hasProcess = hasLinuxCompatibilityProcessMatch(
-        game,
+      hasProcess = hasLaunchedPidMatch(
+        launchedGamePids.get(gameKey),
         executablePath,
-        linuxProcesses
+        pidToProcess
       );
     }
 
@@ -252,25 +296,21 @@ export const watchProcesses = async () => {
 
   currentTick++;
 
-  if (WindowManager.mainWindow) {
-    const gamesRunning = Array.from(gamesPlaytime.entries()).map((entry) => {
-      return {
-        id: entry[0],
-        sessionDurationInMillis: performance.now() - entry[1].firstTick,
-      } as Pick<GameRunning, "id" | "sessionDurationInMillis">;
-    });
-
-    WindowManager.mainWindow.webContents.send("on-games-running", gamesRunning);
-  }
+  WindowManager.sendToAppWindows("on-games-running", getGamesRunning());
 };
 
 function onOpenGame(game: Game) {
   const now = performance.now();
+  const gameKey = levelKeys.game(game.shop, game.objectId);
 
-  gamesPlaytime.set(levelKeys.game(game.shop, game.objectId), {
+  gamesPlaytime.set(gameKey, {
     lastTick: now,
     firstTick: now,
     lastSyncTick: now,
+  });
+
+  logPlaytimeTrace("session-open", game, {
+    performanceNow: now,
   });
 
   // On Linux, keep the launcher visible briefly and let it auto-close itself.
@@ -297,18 +337,31 @@ function onOpenGame(game: Game) {
   );
 
   if (game.remoteId) {
-    trackGamePlaytime(
-      game,
-      game.unsyncedDeltaPlayTimeInMilliseconds ?? 0,
-      new Date()
-    )
+    const deltaToSync = game.unsyncedDeltaPlayTimeInMilliseconds ?? 0;
+    const syncTimestamp = new Date();
+
+    logPlaytimeTrace("open-sync-track-request", game, {
+      deltaToSync,
+      syncTimestamp: syncTimestamp.toISOString(),
+    });
+
+    trackGamePlaytime(game, deltaToSync, syncTimestamp)
       .then(() => {
-        gamesSublevel.put(levelKeys.game(game.shop, game.objectId), {
+        logPlaytimeTrace("open-sync-track-success", game, {
+          deltaToSync,
+        });
+
+        gamesSublevel.put(gameKey, {
           ...game,
           unsyncedDeltaPlayTimeInMilliseconds: 0,
         });
       })
-      .catch(() => {});
+      .catch((error) => {
+        logPlaytimeTrace("open-sync-track-failed", game, {
+          deltaToSync,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
 
     if (game.automaticCloudSync) {
       CloudSync.uploadSaveGame(
@@ -319,7 +372,24 @@ function onOpenGame(game: Game) {
       );
     }
   } else {
-    createGame({ ...game, lastTimePlayed: new Date() }).catch(() => {});
+    const payload = { ...game, lastTimePlayed: new Date() };
+
+    logPlaytimeTrace("open-sync-create-request", payload, {
+      syncTimestamp:
+        payload.lastTimePlayed instanceof Date
+          ? payload.lastTimePlayed.toISOString()
+          : payload.lastTimePlayed,
+    });
+
+    createGame(payload)
+      .then(() => {
+        logPlaytimeTrace("open-sync-create-success", payload);
+      })
+      .catch((error) => {
+        logPlaytimeTrace("open-sync-create-failed", payload, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   }
 }
 
@@ -350,18 +420,37 @@ function onTickGame(game: Game) {
       gamePlaytime.lastSyncTick +
       (game.unsyncedDeltaPlayTimeInMilliseconds ?? 0);
 
+    logPlaytimeTrace("periodic-sync-request", game, {
+      method: game.remoteId ? "track" : "create",
+      deltaToSync,
+      performanceNow: now,
+      lastSyncTick: gamePlaytime.lastSyncTick,
+      lastTick: gamePlaytime.lastTick,
+    });
+
     const gamePromise = game.remoteId
       ? trackGamePlaytime(game, deltaToSync, game.lastTimePlayed!)
       : createGame(game);
 
     gamePromise
       .then(() => {
+        logPlaytimeTrace("periodic-sync-success", game, {
+          method: game.remoteId ? "track" : "create",
+          deltaToSync,
+        });
+
         gamesSublevel.put(levelKeys.game(game.shop, game.objectId), {
           ...updatedGame,
           unsyncedDeltaPlayTimeInMilliseconds: 0,
         });
       })
-      .catch(() => {
+      .catch((error) => {
+        logPlaytimeTrace("periodic-sync-failed", game, {
+          method: game.remoteId ? "track" : "create",
+          deltaToSync,
+          error: error instanceof Error ? error.message : String(error),
+        });
+
         gamesSublevel.put(levelKeys.game(game.shop, game.objectId), {
           ...updatedGame,
           unsyncedDeltaPlayTimeInMilliseconds: deltaToSync,
@@ -382,9 +471,18 @@ const onCloseGame = (game: Game) => {
   const now = performance.now();
   const gamePlaytime = gamesPlaytime.get(gameKey)!;
   gamesPlaytime.delete(gameKey);
+  launchedGamePids.delete(gameKey);
   PowerSaveBlockerManager.markGameClosed(gameKey);
 
   const delta = now - gamePlaytime.lastTick;
+
+  logPlaytimeTrace("session-close", game, {
+    performanceNow: now,
+    delta,
+    firstTick: gamePlaytime.firstTick,
+    lastTick: gamePlaytime.lastTick,
+    lastSyncTick: gamePlaytime.lastSyncTick,
+  });
 
   const updatedGame: Game = {
     ...game,
@@ -411,21 +509,53 @@ const onCloseGame = (game: Game) => {
       gamePlaytime.lastSyncTick +
       (game.unsyncedDeltaPlayTimeInMilliseconds ?? 0);
 
+    logPlaytimeTrace("close-sync-track-request", game, {
+      deltaToSync,
+      syncTimestamp:
+        game.lastTimePlayed instanceof Date
+          ? game.lastTimePlayed.toISOString()
+          : game.lastTimePlayed,
+    });
+
     return trackGamePlaytime(game, deltaToSync, game.lastTimePlayed!)
       .then(() => {
+        logPlaytimeTrace("close-sync-track-success", game, {
+          deltaToSync,
+        });
+
         return gamesSublevel.put(gameKey, {
           ...updatedGame,
           unsyncedDeltaPlayTimeInMilliseconds: 0,
         });
       })
-      .catch(() => {
+      .catch((error) => {
+        logPlaytimeTrace("close-sync-track-failed", game, {
+          deltaToSync,
+          error: error instanceof Error ? error.message : String(error),
+        });
+
         return gamesSublevel.put(gameKey, {
           ...updatedGame,
           unsyncedDeltaPlayTimeInMilliseconds: deltaToSync,
         });
       });
   } else {
-    return createGame(game).catch(() => {});
+    logPlaytimeTrace("close-sync-create-request", game, {
+      syncTimestamp:
+        game.lastTimePlayed instanceof Date
+          ? game.lastTimePlayed.toISOString()
+          : game.lastTimePlayed,
+    });
+
+    return createGame(game)
+      .then(() => {
+        logPlaytimeTrace("close-sync-create-success", game);
+      })
+      .catch((error) => {
+        logPlaytimeTrace("close-sync-create-failed", game, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   }
 };
 

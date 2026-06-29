@@ -1,18 +1,17 @@
 export enum Downloader {
-  RealDebrid,
-  Torrent,
-  Gofile,
-  PixelDrain,
-  Datanodes,
-  Mediafire,
-  TorBox,
-  Hydra,
-  Buzzheavier,
-  FuckingFast,
-  VikingFile,
-  Rootz,
-  Premiumize,
-  AllDebrid,
+  RealDebrid = 0,
+  Torrent = 1,
+  Gofile = 2,
+  PixelDrain = 3,
+  Datanodes = 4,
+  Mediafire = 5,
+  TorBox = 6,
+  Hydra = 7,
+  FuckingFast = 9,
+  VikingFile = 10,
+  Rootz = 11,
+  Premiumize = 12,
+  AllDebrid = 13,
 }
 
 export enum DownloadSourceStatus {
@@ -86,3 +85,45 @@ export enum DownloadError {
 }
 
 export const FILE_EXTENSIONS_TO_EXTRACT = [".rar", ".zip", ".7z"];
+
+export const WINDOWS_GAME_EXECUTABLE_EXTENSIONS = ["exe", "lnk", "bat", "cmd"];
+
+export const LINUX_GAME_EXECUTABLE_EXTENSIONS = [
+  ...WINDOWS_GAME_EXECUTABLE_EXTENSIONS,
+  "AppImage",
+  "sh",
+  "x86_64",
+  "x86",
+  "run",
+  "bin",
+];
+
+export const DARWIN_GAME_EXECUTABLE_EXTENSIONS = ["app"];
+
+export const getGameExecutableFilters = (
+  platform: string,
+  labels: { executable: string; allFiles: string }
+) => {
+  if (platform === "linux") {
+    return [
+      { name: labels.executable, extensions: LINUX_GAME_EXECUTABLE_EXTENSIONS },
+      { name: labels.allFiles, extensions: ["*"] },
+    ];
+  }
+
+  if (platform === "darwin") {
+    return [
+      {
+        name: labels.executable,
+        extensions: DARWIN_GAME_EXECUTABLE_EXTENSIONS,
+      },
+    ];
+  }
+
+  return [
+    { name: labels.executable, extensions: WINDOWS_GAME_EXECUTABLE_EXTENSIONS },
+  ];
+};
+
+export const GAMEMODE_SITE_URL = "https://github.com/FeralInteractive/gamemode";
+export const MANGOHUD_SITE_URL = "https://github.com/flightlessmango/MangoHud";

@@ -1,7 +1,5 @@
 import { Downloader } from "@shared";
 
-export const VERSION_CODENAME = "Split the Atom";
-
 export const DOWNLOADER_NAME = {
   [Downloader.RealDebrid]: "Real-Debrid",
   [Downloader.Torrent]: "Torrent",
@@ -9,7 +7,6 @@ export const DOWNLOADER_NAME = {
   [Downloader.PixelDrain]: "PixelDrain",
   [Downloader.Datanodes]: "Datanodes",
   [Downloader.Mediafire]: "Mediafire",
-  [Downloader.Buzzheavier]: "Buzzheavier",
   [Downloader.FuckingFast]: "FuckingFast",
   [Downloader.TorBox]: "TorBox",
   [Downloader.Hydra]: "Nimbus",

@@ -11,7 +11,6 @@ import { Tooltip } from "react-tooltip";
 import {
   Badge,
   Button,
-  DebridBadge,
   Modal,
   TextField,
   CheckboxField,
@@ -22,12 +21,7 @@ import { DownloadSettingsModal } from "./download-settings-modal";
 import { gameDetailsContext } from "@renderer/context";
 import { Downloader } from "@shared";
 import { orderBy } from "lodash-es";
-import {
-  useDate,
-  useFeature,
-  useAppDispatch,
-  useAppSelector,
-} from "@renderer/hooks";
+import { useDate, useAppDispatch, useAppSelector } from "@renderer/hooks";
 import { clearNewDownloadOptions } from "@renderer/features";
 import { levelDBService } from "@renderer/services/leveldb.service";
 import { getGameKey } from "@renderer/helpers";
@@ -42,7 +36,9 @@ export interface RepacksModalProps {
     automaticallyExtract: boolean,
     addToQueueOnly?: boolean,
     fileIndices?: number[],
-    selectedFilesSize?: number | null
+    selectedFilesSize?: number | null,
+    automaticallyDeleteArchiveFiles?: boolean,
+    signal?: AbortSignal
   ) => Promise<{ ok: boolean; error?: string }>;
   onClose: () => void;
 }
@@ -61,9 +57,6 @@ export function RepacksModal({
   );
   const [filterTerm, setFilterTerm] = useState("");
 
-  const [hashesInDebrid, setHashesInDebrid] = useState<Record<string, boolean>>(
-    {}
-  );
   const [lastCheckTimestamp, setLastCheckTimestamp] = useState<string | null>(
     null
   );
@@ -82,33 +75,6 @@ export function RepacksModal({
   const userPreferences = useAppSelector(
     (state) => state.userPreferences.value
   );
-
-  const getHashFromMagnet = (magnet: string) => {
-    if (!magnet || typeof magnet !== "string") {
-      return null;
-    }
-
-    const hashRegex = /xt=urn:btih:([a-zA-Z0-9]+)/i;
-    const match = magnet.match(hashRegex);
-
-    return match ? match[1].toLowerCase() : null;
-  };
-
-  const { isFeatureEnabled, Feature } = useFeature();
-
-  useEffect(() => {
-    if (!isFeatureEnabled(Feature.NimbusPreview)) {
-      return;
-    }
-
-    const magnets = repacks.flatMap((repack) =>
-      repack.uris.filter((uri) => uri.startsWith("magnet:"))
-    );
-
-    window.electron.checkDebridAvailability(magnets).then((availableHashes) => {
-      setHashesInDebrid(availableHashes);
-    });
-  }, [repacks, isFeatureEnabled, Feature]);
 
   useEffect(() => {
     const fetchDownloadSources = async () => {
@@ -175,19 +141,8 @@ export function RepacksModal({
   }, [visible, game, dispatch]);
 
   const sortedRepacks = useMemo(() => {
-    return orderBy(
-      repacks,
-      [
-        (repack) => {
-          const magnet = repack.uris.find((uri) => uri.startsWith("magnet:"));
-          const hash = magnet ? getHashFromMagnet(magnet) : null;
-          return hash ? (hashesInDebrid[hash] ?? false) : false;
-        },
-        (repack) => repack.uploadDate,
-      ],
-      ["desc", "desc"]
-    );
-  }, [repacks, hashesInDebrid]);
+    return orderBy(repacks, [(repack) => repack.uploadDate], ["desc"]);
+  }, [repacks]);
 
   const getRepackAvailabilityStatus = (
     repack: GameRepack
@@ -295,7 +250,7 @@ export function RepacksModal({
 
       <Modal
         visible={visible}
-        title={t("download_options")}
+        title={t("download_options_title")}
         description={t("repacks_modal_description")}
         onClose={onClose}
       >
@@ -417,10 +372,6 @@ export function RepacksModal({
                     {repack.fileSize} - {repack.downloadSourceName} -{" "}
                     {repack.uploadDate ? formatDate(repack.uploadDate) : ""}
                   </p>
-
-                  {hashesInDebrid[getHashFromMagnet(repack.uris[0]) ?? ""] && (
-                    <DebridBadge />
-                  )}
                 </Button>
               );
             })

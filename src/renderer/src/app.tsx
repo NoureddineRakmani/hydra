@@ -1,6 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Sidebar, BottomPanel, Header, Toast } from "@renderer/components";
-import { WorkWonders } from "workwonders-sdk";
+import { BottomPanel, Header, Sidebar, Toast } from "@renderer/components";
+import { VideoIcon } from "@primer/octicons-react";
+import {
+  DashIcon,
+  ScreenFullIcon,
+  ScreenNormalIcon,
+  XIcon,
+} from "@primer/octicons-react";
 import {
   useAppDispatch,
   useAppSelector,
@@ -10,32 +15,41 @@ import {
   useUserDetails,
 } from "@renderer/hooks";
 import { useDownloadOptionsListener } from "@renderer/hooks/use-download-options-listener";
+import i18n from "i18next";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { WorkWonders } from "workwonders-sdk";
 
-import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
+  clearExtraction,
+  closeToast,
+  failClassicsScan,
+  finishClassicsScan,
+  hydrateClassicsScan,
+  setExtractionProgress,
+  setGameRunning,
+  setProfileBackground,
+  setUserDetails,
   setUserPreferences,
   toggleDraggingDisabled,
-  closeToast,
-  setUserDetails,
-  setProfileBackground,
-  setGameRunning,
-  setExtractionProgress,
-  clearExtraction,
+  updateClassicsScanProgress,
 } from "@renderer/features";
 import { useTranslation } from "react-i18next";
+import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useSubscription } from "./hooks/use-subscription";
-import { HydraCloudModal } from "./pages/shared-modals/hydra-cloud/hydra-cloud-modal";
 import { ArchiveDeletionModal } from "./pages/downloads/archive-deletion-error-modal";
+import { CloudSubscriptionModal } from "./pages/shared-modals/hydra-cloud/cloud-subscription-modal";
+import { AddFriendModal } from "./pages/profile/profile-content/add-friend-modal";
+import { ClassicsScanModal } from "./pages/settings/emulation/classics-scan-modal";
 
-import {
-  injectCustomCss,
-  removeCustomCss,
-  getAchievementSoundUrl,
-  getAchievementSoundVolume,
-} from "./helpers";
-import { levelDBService } from "./services/leveldb.service";
 import type { UserPreferences } from "@types";
 import "./app.scss";
+import {
+  getAchievementSoundUrl,
+  getAchievementSoundVolume,
+  injectCustomCss,
+  removeCustomCss,
+} from "./helpers";
+import { levelDBService } from "./services/leveldb.service";
 
 export interface AppProps {
   children: React.ReactNode;
@@ -57,7 +71,7 @@ export function App() {
 
   const { t } = useTranslation("app");
 
-  const { clearDownload, setLastPacket } = useDownload();
+  const { clearDownload, setLastPacket, lastPacket } = useDownload();
 
   const workwondersRef = useRef<WorkWonders | null>(null);
 
@@ -87,6 +101,7 @@ export function App() {
   const [showArchiveDeletionModal, setShowArchiveDeletionModal] =
     useState(false);
   const [archivePaths, setArchivePaths] = useState<string[]>([]);
+  const [showAddFriendModal, setShowAddFriendModal] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -96,6 +111,27 @@ export function App() {
       dispatch(setUserPreferences(preferences as UserPreferences | null));
     });
   }, [navigate, location.pathname, dispatch, updateLibrary]);
+
+  useEffect(() => {
+    const unsubscribe = window.electron.onUserPreferencesUpdated(
+      (preferences) => {
+        if (!preferences) {
+          dispatch(setUserPreferences(null));
+          return;
+        }
+
+        if (preferences.language && preferences.language !== i18n.language) {
+          void i18n.changeLanguage(preferences.language);
+        }
+
+        dispatch(setUserPreferences(preferences));
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [dispatch]);
 
   useEffect(() => {
     const unsubscribe = window.electron.onDownloadProgress(
@@ -126,6 +162,16 @@ export function App() {
 
     return () => unsubscribe();
   }, [updateLibrary]);
+
+  useEffect(() => {
+    if (!lastPacket?.gameId) return;
+
+    const activeGame = library.find((game) => game.id === lastPacket.gameId);
+
+    if (!activeGame || activeGame.download?.status !== "active") {
+      clearDownload();
+    }
+  }, [clearDownload, lastPacket?.gameId, library]);
 
   const setupWorkWonders = useCallback(
     async (token?: string, locale?: string) => {
@@ -168,12 +214,28 @@ export function App() {
           seeding: 1442,
           "peers-and-seeds": 1449,
           "steam-achievements": 1412,
+          "install-duckstation": 6441,
+          "install-pcsx2": 6192,
+          "install-rpcs3": 6510,
         },
         en: {
           "cannot-write-directory": 4122,
           seeding: 4116,
           "peers-and-seeds": 4119,
           "steam-achievements": 4140,
+          "install-duckstation": 6465,
+          "install-pcsx2": 6390,
+          "install-rpcs3": 6524,
+        },
+        ru: {
+          "install-duckstation": 6479,
+          "install-pcsx2": 6429,
+          "install-rpcs3": 6541,
+        },
+        es: {
+          "install-duckstation": 6492,
+          "install-pcsx2": 6410,
+          "install-rpcs3": 6552,
         },
       };
 
@@ -271,9 +333,47 @@ export function App() {
   }, [dispatch, library]);
 
   useEffect(() => {
+    window.electron.getActiveClassicsImport().then((snapshot) => {
+      if (snapshot) dispatch(hydrateClassicsScan(snapshot));
+    });
+
+    const unsubscribe = window.electron.onClassicsImportProgress((payload) => {
+      if (payload.type === "error") {
+        dispatch(failClassicsScan(payload.message));
+        return;
+      }
+
+      if (payload.type === "progress") {
+        dispatch(updateClassicsScanProgress(payload));
+        return;
+      }
+
+      dispatch(
+        finishClassicsScan({
+          cancelled: payload.type === "cancelled",
+          system: payload.system,
+          result: {
+            fileCount: payload.fileCount,
+            sizeBytes: payload.sizeBytes,
+            matched: payload.matched,
+            unmatched: payload.unmatched,
+            unmatchedFiles: payload.unmatchedFiles,
+          },
+        })
+      );
+      updateLibrary();
+    });
+
+    return () => unsubscribe();
+  }, [dispatch, updateLibrary]);
+
+  useEffect(() => {
     const listeners = [
       window.electron.onSignIn(onSignIn),
       window.electron.onLibraryBatchComplete(() => {
+        updateLibrary();
+      }),
+      window.electron.onDownloadsUpdated(() => {
         updateLibrary();
       }),
       window.electron.onSignOut(() => clearUserDetails()),
@@ -347,6 +447,22 @@ export function App() {
     return () => unsubscribe();
   }, [loadAndApplyTheme]);
 
+  useEffect(() => {
+    const unsubscribe = globalThis.electron.onNavigate((path) => {
+      navigate(path);
+    });
+
+    return () => unsubscribe();
+  }, [navigate]);
+
+  useEffect(() => {
+    const unsubscribe = globalThis.electron.onOpenAddFriendModal(() => {
+      setShowAddFriendModal(true);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   const playAudio = useCallback(async () => {
     const soundUrl = await getAchievementSoundUrl();
     const volume = await getAchievementSoundVolume();
@@ -369,16 +485,99 @@ export function App() {
     dispatch(closeToast());
   }, [dispatch]);
 
+  const [isWindowMaximized, setIsWindowMaximized] = useState(false);
+
+  useEffect(() => {
+    if (window.electron.platform !== "linux") return;
+
+    if (window.electron.isWayland) {
+      document.body.classList.add("window-rounded");
+    }
+
+    let cancelled = false;
+
+    const applyMaximizeState = (isMaximized: boolean) => {
+      if (cancelled) return;
+      setIsWindowMaximized(isMaximized);
+      document.body.classList.toggle("window-maximized", isMaximized);
+    };
+
+    window.electron.isMainWindowMaximized().then(applyMaximizeState);
+    const unsubscribe =
+      window.electron.onWindowMaximizeChange(applyMaximizeState);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      document.body.classList.remove("window-rounded");
+      document.body.classList.remove("window-maximized");
+    };
+  }, []);
+
   return (
     <>
-      {window.electron.platform === "win32" && (
-        <div className="title-bar">
+      {(window.electron.platform === "win32" ||
+        window.electron.platform === "linux") && (
+        <div
+          className={`title-bar${
+            window.electron.platform === "win32" ? " title-bar--windows" : ""
+          }`}
+        >
           <h4>
             Hydra
             {hasActiveSubscription && (
               <span className="title-bar__cloud-text"> Cloud</span>
             )}
           </h4>
+
+          <button
+            type="button"
+            className="title-bar__big-picture"
+            onClick={() => globalThis.window.electron.openBigPictureWindow()}
+          >
+            <VideoIcon size={14} />
+            {t("big_picture", { ns: "sidebar" })}
+          </button>
+
+          {window.electron.platform === "linux" && (
+            <div className="title-bar__window-controls">
+              <button
+                type="button"
+                className="title-bar__window-control"
+                onClick={() => window.electron.minimizeMainWindow()}
+                title={t("header:minimize")}
+                aria-label={t("header:minimize")}
+              >
+                <DashIcon size={16} />
+              </button>
+              <button
+                type="button"
+                className="title-bar__window-control"
+                onClick={() => window.electron.toggleMaximizeMainWindow()}
+                title={
+                  isWindowMaximized ? t("header:restore") : t("header:maximize")
+                }
+                aria-label={
+                  isWindowMaximized ? t("header:restore") : t("header:maximize")
+                }
+              >
+                {isWindowMaximized ? (
+                  <ScreenNormalIcon size={16} />
+                ) : (
+                  <ScreenFullIcon size={16} />
+                )}
+              </button>
+              <button
+                type="button"
+                className="title-bar__window-control title-bar__window-control--close"
+                onClick={() => window.electron.closeMainWindow()}
+                title={t("header:close")}
+                aria-label={t("header:close")}
+              >
+                <XIcon size={16} />
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -391,10 +590,10 @@ export function App() {
         duration={toast.duration}
       />
 
-      <HydraCloudModal
+      <CloudSubscriptionModal
         visible={isHydraCloudModalVisible}
         onClose={hideHydraCloudModal}
-        feature={hydraCloudFeature}
+        feature={hydraCloudFeature || undefined}
       />
 
       <ArchiveDeletionModal
@@ -402,6 +601,13 @@ export function App() {
         archivePaths={archivePaths}
         onClose={() => setShowArchiveDeletionModal(false)}
       />
+
+      <AddFriendModal
+        visible={showAddFriendModal}
+        onClose={() => setShowAddFriendModal(false)}
+      />
+
+      <ClassicsScanModal />
 
       <main>
         <Sidebar />

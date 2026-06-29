@@ -4,14 +4,16 @@ import {
   useMemo,
   useState,
   useCallback,
+  useRef,
 } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   useLibrary,
   useAppDispatch,
   useAppSelector,
   useGameCollections,
   useToast,
+  useUserDetails,
 } from "@renderer/hooks";
 import { setHeaderTitle } from "@renderer/features";
 import {
@@ -19,14 +21,19 @@ import {
   TelescopeIcon,
   FileDirectoryIcon,
   PencilIcon,
+  PlusIcon,
   TrashIcon,
+  SyncIcon,
 } from "@primer/octicons-react";
 import { useTranslation } from "react-i18next";
+import { Tooltip } from "react-tooltip";
+import { AuthPage } from "@shared";
 import { GameCollection, LibraryGame } from "@types";
 import {
   Button,
   ConfirmationModal,
   ContextMenu,
+  CreateCollectionModal,
   GameContextMenu,
   Modal,
   TextField,
@@ -36,9 +43,30 @@ import { LibraryGameCard } from "./library-game-card";
 import { LibraryGameCardLarge } from "./library-game-card-large";
 import { ViewOptions, ViewMode } from "./view-options";
 import { FilterOptions, SortOption } from "./filter-options";
+import { CategoryFilter, LibraryCategory } from "./category-filter";
+import { PlatformFilter } from "./platform-filter";
+import {
+  ClassicsOnboardingModal,
+  hasDismissedClassicsOnboarding,
+} from "@renderer/components/classics-onboarding-modal/classics-onboarding-modal";
 import "./library.scss";
 
 const FAVORITES_COLLECTION_ID = "__favorites__";
+const GAP = 16;
+const LARGE_CARD_ESTIMATED_HEIGHT = 300;
+const FALLBACK_ITEM_WIDTH = 150;
+
+const COLUMN_BREAKPOINTS = [3000, 2600, 2000, 1300, 900] as const;
+const COLUMNS: Record<"grid" | "compact", readonly number[]> = {
+  grid: [12, 8, 6, 5, 4, 2],
+  compact: [14, 12, 9, 7, 5, 3],
+};
+
+const getColumnsCount = (width: number, mode: ViewMode): number => {
+  if (mode === "large") return width >= 900 ? 2 : 1;
+  const idx = COLUMN_BREAKPOINTS.findIndex((bp) => width >= bp);
+  return COLUMNS[mode][idx === -1 ? COLUMN_BREAKPOINTS.length : idx];
+};
 const SORT_OPTIONS: SortOption[] = [
   "title_asc",
   "recently_played",
@@ -61,6 +89,7 @@ const getGameCollectionIds = (game: LibraryGame): string[] => {
 export default function Library() {
   const { library, updateLibrary } = useLibrary();
   const { showSuccessToast, showErrorToast } = useToast();
+  const { userDetails } = useUserDetails();
   const {
     collections,
     loadCollections,
@@ -99,6 +128,58 @@ export default function Library() {
   const [showDeleteCollectionModal, setShowDeleteCollectionModal] =
     useState(false);
   const [isDeletingCollection, setIsDeletingCollection] = useState(false);
+  const [showCreateCollectionModal, setShowCreateCollectionModal] =
+    useState(false);
+
+  const [category, setCategory] = useState<LibraryCategory>(() => {
+    const saved = localStorage.getItem("library-category");
+    if (saved === "all" || saved === "pc" || saved === "classics") {
+      return saved;
+    }
+    return "all";
+  });
+  const [selectedPlatform, setSelectedPlatform] = useState<string | null>(null);
+  const [isImportingClassics, setIsImportingClassics] = useState(false);
+
+  // The category switch and platform filter are always available, so the
+  // selected category is honoured even before any classics games exist.
+  const effectiveCategory: LibraryCategory = category;
+
+  const [showClassicsOnboarding, setShowClassicsOnboarding] = useState(false);
+  const classicsOnboardingTriggeredRef = useRef(false);
+
+  const gamesScrollRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+  const [isGamesScrolled, setIsGamesScrolled] = useState(false);
+
+  useEffect(() => {
+    const el = gamesScrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) =>
+      setContainerWidth(entry.contentRect.width)
+    );
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (
+      effectiveCategory === "classics" &&
+      !classicsOnboardingTriggeredRef.current &&
+      !hasDismissedClassicsOnboarding()
+    ) {
+      classicsOnboardingTriggeredRef.current = true;
+      setShowClassicsOnboarding(true);
+    }
+  }, [effectiveCategory]);
+
+  const handleCategoryChange = useCallback((next: LibraryCategory) => {
+    setCategory(next);
+    localStorage.setItem("library-category", next);
+    if (next === "pc") {
+      setSelectedPlatform(null);
+    }
+  }, []);
 
   const searchQuery = useAppSelector((state) => state.library.searchQuery);
   const deferredSearchQuery = useDeferredValue(searchQuery);
@@ -140,6 +221,14 @@ export default function Library() {
       void loadCollections();
     });
 
+    const unsubscribeClassicsImport = window.electron.onClassicsImportStatus(
+      (importing) => setIsImportingClassics(importing)
+    );
+
+    void window.electron
+      .getClassicsImportStatus()
+      .then((importing) => setIsImportingClassics(importing));
+
     window.electron.refreshLibraryAssets().finally(() => {
       const collectionsPromise = hasLoadedCollections
         ? Promise.resolve([])
@@ -150,6 +239,7 @@ export default function Library() {
 
     return () => {
       unsubscribe();
+      unsubscribeClassicsImport();
     };
   }, [dispatch, t, updateLibrary, loadCollections, hasLoadedCollections]);
 
@@ -191,6 +281,15 @@ export default function Library() {
   const handleCloseCollectionContextMenu = useCallback(() => {
     setCollectionContextMenu((prev) => ({ ...prev, visible: false }));
   }, []);
+
+  const handleCreateCollectionButtonClick = useCallback(() => {
+    if (!userDetails) {
+      window.electron.openAuthWindow(AuthPage.SignIn);
+      return;
+    }
+
+    setShowCreateCollectionModal(true);
+  }, [userDetails]);
 
   const resolveCollectionErrorMessage = useCallback(
     (
@@ -447,6 +546,22 @@ export default function Library() {
       }
     }
 
+    if (effectiveCategory === "pc") {
+      filtered = filtered.filter((game) => game.shop !== "launchbox");
+    } else if (effectiveCategory === "classics") {
+      filtered = filtered.filter((game) => game.shop === "launchbox");
+      if (selectedPlatform) {
+        filtered = filtered.filter(
+          (game) => game.platform === selectedPlatform
+        );
+      }
+    } else if (selectedPlatform) {
+      filtered = filtered.filter(
+        (game) =>
+          game.shop !== "launchbox" || game.platform === selectedPlatform
+      );
+    }
+
     if (!deferredSearchQuery.trim()) return filtered;
 
     const queryLower = deferredSearchQuery.toLowerCase();
@@ -466,7 +581,25 @@ export default function Library() {
 
       return queryIndex === queryLower.length;
     });
-  }, [sortedLibrary, deferredSearchQuery, selectedCollectionId]);
+  }, [
+    sortedLibrary,
+    deferredSearchQuery,
+    selectedCollectionId,
+    effectiveCategory,
+    selectedPlatform,
+  ]);
+
+  const uniquePlatforms = useMemo(() => {
+    const set = new Set<string>();
+    for (const game of library) {
+      if (game.shop === "launchbox" && game.platform) {
+        set.add(game.platform);
+      }
+    }
+    return Array.from(set).sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" })
+    );
+  }, [library]);
 
   const favoritesCount = useMemo(() => {
     return library.filter((game) => game.favorite).length;
@@ -483,6 +616,39 @@ export default function Library() {
     ];
   }, [collections, favoritesCount, t]);
 
+  const columnsCount = useMemo(
+    () => getColumnsCount(containerWidth, viewMode),
+    [containerWidth, viewMode]
+  );
+
+  const rows = useMemo(() => {
+    const result: LibraryGame[][] = [];
+    for (let i = 0; i < filteredLibrary.length; i += columnsCount) {
+      result.push(filteredLibrary.slice(i, i + columnsCount));
+    }
+    return result;
+  }, [filteredLibrary, columnsCount]);
+
+  const estimatedRowHeight = useMemo(() => {
+    if (viewMode === "large") return LARGE_CARD_ESTIMATED_HEIGHT + GAP;
+    const itemWidth =
+      containerWidth > 0
+        ? (containerWidth - GAP * (columnsCount - 1)) / columnsCount
+        : FALLBACK_ITEM_WIDTH;
+    return Math.round((itemWidth * 4) / 3) + GAP;
+  }, [viewMode, containerWidth, columnsCount]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => gamesScrollRef.current,
+    estimateSize: () => estimatedRowHeight,
+    overscan: 3,
+  });
+
+  useEffect(() => {
+    gamesScrollRef.current?.scrollTo({ top: 0 });
+  }, [effectiveCategory, selectedPlatform]);
+
   const hasGames = library.length > 0;
   const hasNoFilteredGames = filteredLibrary.length === 0;
   const isFavoritesCollectionSelected =
@@ -495,6 +661,10 @@ export default function Library() {
     Boolean(selectedCollectionId) &&
     !isFavoritesCollectionSelected &&
     hasNoFilteredGames;
+  const shouldShowClassicsImporting =
+    effectiveCategory === "classics" &&
+    isImportingClassics &&
+    hasNoFilteredGames;
 
   return (
     <section className="library__content">
@@ -502,10 +672,21 @@ export default function Library() {
         <div className="library__page-header">
           <div className="library__controls-row">
             <div className="library__controls-left">
-              <FilterOptions sortBy={sortBy} onSortChange={handleSortChange} />
+              <CategoryFilter
+                category={effectiveCategory}
+                onCategoryChange={handleCategoryChange}
+              />
             </div>
 
             <div className="library__controls-right">
+              <FilterOptions sortBy={sortBy} onSortChange={handleSortChange} />
+              {effectiveCategory !== "pc" && (
+                <PlatformFilter
+                  platform={selectedPlatform}
+                  platforms={uniquePlatforms}
+                  onPlatformChange={setSelectedPlatform}
+                />
+              )}
               <ViewOptions
                 viewMode={viewMode}
                 onViewModeChange={handleViewModeChange}
@@ -513,57 +694,88 @@ export default function Library() {
             </div>
           </div>
 
-          <div
-            className="library__collections"
-            role="group"
-            aria-label={t("collections")}
-          >
-            {libraryCollections.map((collection) => {
-              const isFavoritesCollection =
-                collection.id === FAVORITES_COLLECTION_ID;
+          <div className="library__collections-section">
+            <div className="library__collections-header">
+              <small className="library__collections-title">
+                {t("collections")}
+              </small>
+              <button
+                type="button"
+                className="library__add-collection-button"
+                onClick={handleCreateCollectionButtonClick}
+                aria-label={t("create_collection", { ns: "sidebar" })}
+                data-tooltip-id="library-create-collection-tooltip"
+                data-tooltip-content={t("create_collection_tooltip", {
+                  ns: "sidebar",
+                })}
+                data-tooltip-place="top"
+              >
+                <PlusIcon size={16} />
+              </button>
+            </div>
 
-              return (
-                <button
-                  key={collection.id}
-                  type="button"
-                  className={`library__collection-item ${selectedCollectionId === collection.id ? "library__collection-item--active" : ""}`}
-                  onClick={() =>
-                    handleCollectionSelect(
-                      selectedCollectionId === collection.id
-                        ? null
-                        : collection.id
-                    )
-                  }
-                  onContextMenu={
-                    isFavoritesCollection
-                      ? undefined
-                      : (event) =>
-                          handleOpenCollectionContextMenu(event, collection)
-                  }
-                >
-                  {isFavoritesCollection ? (
-                    <HeartIcon size={16} />
-                  ) : (
-                    <FileDirectoryIcon size={16} />
-                  )}
-                  <span>{collection.name}</span>
-                  <span className="library__collection-count">
-                    {collection.gamesCount}
-                  </span>
-                </button>
-              );
-            })}
+            <div
+              className="library__collections"
+              role="group"
+              aria-label={t("collections")}
+            >
+              {libraryCollections.map((collection) => {
+                const isFavoritesCollection =
+                  collection.id === FAVORITES_COLLECTION_ID;
+
+                return (
+                  <button
+                    key={collection.id}
+                    type="button"
+                    className={`library__collection-item ${selectedCollectionId === collection.id ? "library__collection-item--active" : ""}`}
+                    onClick={() =>
+                      handleCollectionSelect(
+                        selectedCollectionId === collection.id
+                          ? null
+                          : collection.id
+                      )
+                    }
+                    onContextMenu={
+                      isFavoritesCollection
+                        ? undefined
+                        : (event) =>
+                            handleOpenCollectionContextMenu(event, collection)
+                    }
+                  >
+                    {isFavoritesCollection ? (
+                      <HeartIcon size={16} />
+                    ) : (
+                      <FileDirectoryIcon size={16} />
+                    )}
+                    <span>{collection.name}</span>
+                    <span className="library__collection-count">
+                      {collection.gamesCount}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
 
-      {!hasGames && (
+      {!hasGames && !shouldShowClassicsImporting && (
         <div className="library__no-games">
           <div className="library__telescope-icon">
             <TelescopeIcon size={24} />
           </div>
           <h2>{t("no_games_title")}</h2>
           <p>{t("no_games_description")}</p>
+        </div>
+      )}
+
+      {shouldShowClassicsImporting && (
+        <div className="library__empty">
+          <div className="library__icon-container library__icon-container--spinning">
+            <SyncIcon size={24} />
+          </div>
+          <h2>{t("importing_classics_title")}</h2>
+          <p>{t("importing_classics_description")}</p>
         </div>
       )}
 
@@ -587,55 +799,62 @@ export default function Library() {
         </div>
       )}
 
-      {hasGames &&
-        !shouldShowFavoritesEmptyState &&
-        !shouldShowCollectionEmptyState && (
-          <AnimatePresence mode="wait">
-            {viewMode === "large" && (
-              <motion.div
-                key={`${sortBy}-large`}
-                className="library__games-list library__games-list--large"
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 10 }}
-                transition={{ duration: 0.2 }}
-              >
-                {filteredLibrary.map((game) => (
-                  <LibraryGameCardLarge
-                    key={`${game.shop}-${game.objectId}`}
-                    game={game}
-                    onContextMenu={handleOpenContextMenu}
-                  />
-                ))}
-              </motion.div>
-            )}
-
-            {viewMode !== "large" && (
-              <motion.ul
-                key={`${sortBy}-${viewMode}`}
-                className={`library__games-grid library__games-grid--${viewMode}`}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 10 }}
-                transition={{ duration: 0.2 }}
-              >
-                {filteredLibrary.map((game) => (
-                  <li
-                    key={`${game.shop}-${game.objectId}`}
-                    style={{ listStyle: "none" }}
-                  >
-                    <LibraryGameCard
-                      game={game}
-                      onMouseEnter={handleOnMouseEnterGameCard}
-                      onMouseLeave={handleOnMouseLeaveGameCard}
-                      onContextMenu={handleOpenContextMenu}
-                    />
-                  </li>
-                ))}
-              </motion.ul>
-            )}
-          </AnimatePresence>
-        )}
+      <div
+        className="library__games-scroll"
+        ref={gamesScrollRef}
+        onScroll={(e) =>
+          setIsGamesScrolled((e.currentTarget as HTMLElement).scrollTop > 0)
+        }
+      >
+        <div
+          className={`library__scroll-shadow${isGamesScrolled ? " library__scroll-shadow--visible" : ""}`}
+        />
+        {hasGames &&
+          !shouldShowFavoritesEmptyState &&
+          !shouldShowCollectionEmptyState &&
+          !shouldShowClassicsImporting && (
+            <div
+              style={{
+                height: `${rowVirtualizer.getTotalSize()}px`,
+                position: "relative",
+              }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => (
+                <div
+                  key={virtualRow.key}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    right: GAP,
+                    transform: `translateY(${virtualRow.start}px)`,
+                    display: "grid",
+                    gridTemplateColumns: `repeat(${columnsCount}, 1fr)`,
+                    gap: `${GAP}px`,
+                  }}
+                >
+                  {rows[virtualRow.index].map((game) =>
+                    viewMode === "large" ? (
+                      <LibraryGameCardLarge
+                        key={`${game.shop}-${game.objectId}`}
+                        game={game}
+                        onContextMenu={handleOpenContextMenu}
+                      />
+                    ) : (
+                      <LibraryGameCard
+                        key={`${game.shop}-${game.objectId}`}
+                        game={game}
+                        onMouseEnter={handleOnMouseEnterGameCard}
+                        onMouseLeave={handleOnMouseLeaveGameCard}
+                        onContextMenu={handleOpenContextMenu}
+                      />
+                    )
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+      </div>
 
       {gameContextMenu.game && (
         <GameContextMenu
@@ -708,6 +927,18 @@ export default function Library() {
         confirmButtonLabel={t("delete_collection")}
         buttonsIsDisabled={isDeletingCollection}
       />
+
+      <CreateCollectionModal
+        visible={showCreateCollectionModal}
+        onClose={() => setShowCreateCollectionModal(false)}
+      />
+
+      <ClassicsOnboardingModal
+        visible={showClassicsOnboarding}
+        onClose={() => setShowClassicsOnboarding(false)}
+      />
+
+      <Tooltip id="library-create-collection-tooltip" />
     </section>
   );
 }

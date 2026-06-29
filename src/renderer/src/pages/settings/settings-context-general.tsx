@@ -9,10 +9,16 @@ import {
   SelectField,
   TextField,
 } from "@renderer/components";
+import type { DownloadDirectoryPreference } from "@types";
 import { settingsContext } from "@renderer/context";
 import { useAppSelector } from "@renderer/hooks";
 import languageResources from "@locales";
+import {
+  prepareDefaultDownloadPathSync,
+  replaceSavedDownloadDirectoryAndSetDefault,
+} from "@shared";
 import { SettingsAppearance } from "./appearance/settings-appearance";
+import { DownloadDirectoryReplacementModal } from "./download-directory-replacement-modal";
 
 interface LanguageOption {
   option: string;
@@ -25,6 +31,12 @@ interface SettingsContextGeneralProps {
     authorId: string | null;
     authorName: string | null;
   };
+}
+
+interface DownloadDirectoryReplacementState {
+  nextPath: string;
+  replaceableDirectories: DownloadDirectoryPreference[];
+  selectedReplacementPath: string;
 }
 
 export function SettingsContextGeneral({
@@ -40,6 +52,8 @@ export function SettingsContextGeneral({
   const [languageOptions, setLanguageOptions] = useState<LanguageOption[]>([]);
   const [defaultDownloadsPath, setDefaultDownloadsPath] = useState("");
   const [showRunAtStartup, setShowRunAtStartup] = useState(false);
+  const [downloadDirectoryReplacement, setDownloadDirectoryReplacement] =
+    useState<DownloadDirectoryReplacementState | null>(null);
 
   const [form, setForm] = useState({
     downloadsPath: "",
@@ -48,6 +62,7 @@ export function SettingsContextGeneral({
     runAtStartup: false,
     startMinimized: false,
     hideToTrayOnGameStart: false,
+    launchToLibraryPage: false,
     enableAutoInstall: false,
   });
 
@@ -92,6 +107,7 @@ export function SettingsContextGeneral({
       runAtStartup: userPreferences.runAtStartup ?? false,
       startMinimized: userPreferences.startMinimized ?? false,
       hideToTrayOnGameStart: userPreferences.hideToTrayOnGameStart ?? false,
+      launchToLibraryPage: userPreferences.launchToLibraryPage ?? false,
       enableAutoInstall: userPreferences.enableAutoInstall ?? false,
     });
   }, [userPreferences, defaultDownloadsPath]);
@@ -115,9 +131,59 @@ export function SettingsContextGeneral({
       properties: ["openDirectory"],
     });
 
-    if (filePaths && filePaths.length > 0) {
-      handleChange({ downloadsPath: filePaths[0] });
+    const path = filePaths?.[0];
+
+    if (!path || !defaultDownloadsPath) {
+      return;
     }
+
+    const nextAction = prepareDefaultDownloadPathSync(
+      userPreferences,
+      path,
+      defaultDownloadsPath
+    );
+
+    if (nextAction.type === "noop") {
+      return;
+    }
+
+    if (
+      nextAction.type === "set-existing" ||
+      nextAction.type === "add-and-set"
+    ) {
+      setForm((prev) => ({
+        ...prev,
+        downloadsPath: nextAction.nextDefaultPath,
+      }));
+      await updateUserPreferences(nextAction.nextPreferences);
+      return;
+    }
+
+    setDownloadDirectoryReplacement({
+      nextPath: nextAction.nextPath,
+      replaceableDirectories: nextAction.replaceableDirectories,
+      selectedReplacementPath: nextAction.recommendedReplacementPath,
+    });
+  };
+
+  const handleConfirmDownloadDirectoryReplacement = async () => {
+    if (!downloadDirectoryReplacement || !defaultDownloadsPath) {
+      return;
+    }
+
+    const replacement = replaceSavedDownloadDirectoryAndSetDefault(
+      userPreferences,
+      downloadDirectoryReplacement.nextPath,
+      downloadDirectoryReplacement.selectedReplacementPath,
+      defaultDownloadsPath
+    );
+
+    setForm((prev) => ({
+      ...prev,
+      downloadsPath: replacement.nextDefaultPath,
+    }));
+    setDownloadDirectoryReplacement(null);
+    await updateUserPreferences(replacement.nextPreferences);
   };
 
   return (
@@ -201,6 +267,16 @@ export function SettingsContextGeneral({
             }}
           />
         )}
+
+        <CheckboxField
+          label={t("launch_hydra_in_library_page")}
+          checked={form.launchToLibraryPage}
+          onChange={() =>
+            handleChange({
+              launchToLibraryPage: !form.launchToLibraryPage,
+            })
+          }
+        />
       </div>
 
       {window.electron.platform === "linux" && (
@@ -221,6 +297,27 @@ export function SettingsContextGeneral({
         <h3>{t("appearance")}</h3>
         <SettingsAppearance appearance={appearance} />
       </div>
+
+      <DownloadDirectoryReplacementModal
+        visible={downloadDirectoryReplacement !== null}
+        nextPath={downloadDirectoryReplacement?.nextPath ?? ""}
+        directories={downloadDirectoryReplacement?.replaceableDirectories ?? []}
+        selectedReplacementPath={
+          downloadDirectoryReplacement?.selectedReplacementPath ?? ""
+        }
+        onSelectedReplacementPathChange={(path) => {
+          setDownloadDirectoryReplacement((current) =>
+            current
+              ? {
+                  ...current,
+                  selectedReplacementPath: path,
+                }
+              : current
+          );
+        }}
+        onClose={() => setDownloadDirectoryReplacement(null)}
+        onConfirm={handleConfirmDownloadDirectoryReplacement}
+      />
     </div>
   );
 }
