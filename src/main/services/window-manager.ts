@@ -43,35 +43,35 @@ export class WindowManager {
   private static readonly editorWindows: Map<string, BrowserWindow> = new Map();
 
   private static initialConfigInitializationMainWindow: Electron.BrowserWindowConstructorOptions =
-  {
-    width: 1200,
-    height: 860,
-    minWidth: 1024,
-    minHeight: 860,
-    icon,
-    trafficLightPosition: { x: 16, y: 16 },
-    webPreferences: {
-      preload: path.join(__dirname, "../preload/index.mjs"),
-      sandbox: false,
-    },
-    show: false,
-    ...(process.platform === "linux"
-    ? {
-      frame: false,
-      ...(isLinuxWayland
-      ? { transparent: true, backgroundColor: "#00000000" }
-      : { backgroundColor: "#1c1c1c" }),
-    }
-    : {
-      backgroundColor: "#1c1c1c",
-      titleBarStyle: "hidden",
-      titleBarOverlay: {
-        symbolColor: "#DADBE1",
-        color: "#00000000",
-        height: 34,
+    {
+      width: 1200,
+      height: 860,
+      minWidth: 1024,
+      minHeight: 860,
+      icon,
+      trafficLightPosition: { x: 16, y: 16 },
+      webPreferences: {
+        preload: path.join(__dirname, "../preload/index.mjs"),
+        sandbox: false,
       },
-    }),
-  };
+      show: false,
+      ...(process.platform === "linux"
+        ? {
+            frame: false,
+            ...(isLinuxWayland
+              ? { transparent: true, backgroundColor: "#00000000" }
+              : { backgroundColor: "#1c1c1c" }),
+          }
+        : {
+            backgroundColor: "#1c1c1c",
+            titleBarStyle: "hidden",
+            titleBarOverlay: {
+              symbolColor: "#DADBE1",
+              color: "#00000000",
+              height: 34,
+            },
+          }),
+    };
 
   private static formatVersionNumber(version: string) {
     return version.replaceAll(".", "-");
@@ -173,13 +173,13 @@ export class WindowManager {
     if (this.mainWindow) return;
 
     const userPreferences = await db
-    .get<string, UserPreferences | null>(levelKeys.userPreferences, {
-      valueEncoding: "json",
-    })
-    .catch(() => null);
+      .get<string, UserPreferences | null>(levelKeys.userPreferences, {
+        valueEncoding: "json",
+      })
+      .catch(() => null);
 
     const { isMaximized = false, ...configWithoutMaximized } =
-    await this.loadScreenConfig();
+      await this.loadScreenConfig();
 
     this.updateInitialConfig(configWithoutMaximized);
 
@@ -312,14 +312,14 @@ export class WindowManager {
         const lastBounds = mainWindow.getBounds();
         const isMaximized = mainWindow.isMaximized() ?? false;
         const screenConfig = isMaximized
-        ? {
-          x: undefined,
-          y: undefined,
-          height: this.initialConfigInitializationMainWindow.height ?? 860,
-          width: this.initialConfigInitializationMainWindow.width ?? 1200,
-          isMaximized: true,
-        }
-        : { ...lastBounds, isMaximized };
+          ? {
+              x: undefined,
+              y: undefined,
+              height: this.initialConfigInitializationMainWindow.height ?? 860,
+              width: this.initialConfigInitializationMainWindow.width ?? 1200,
+              isMaximized: true,
+            }
+          : { ...lastBounds, isMaximized };
 
         await this.saveScreenConfig(screenConfig);
       }
@@ -342,18 +342,18 @@ export class WindowManager {
     }
 
     const userPreferences = await db
-    .get<string, UserPreferences | null>(levelKeys.userPreferences, {
-      valueEncoding: "json",
-    })
-    .catch(() => null);
+      .get<string, UserPreferences | null>(levelKeys.userPreferences, {
+        valueEncoding: "json",
+      })
+      .catch(() => null);
 
     const targetDisplay = this.mainWindow?.isDestroyed()
-    ? null
-    : this.mainWindow
-    ? screen.getDisplayMatching(this.mainWindow.getBounds())
-    : screen.getPrimaryDisplay();
+      ? null
+      : this.mainWindow
+        ? screen.getDisplayMatching(this.mainWindow.getBounds())
+        : screen.getPrimaryDisplay();
     const targetBounds =
-    targetDisplay?.bounds ?? screen.getPrimaryDisplay().bounds;
+      targetDisplay?.bounds ?? screen.getPrimaryDisplay().bounds;
 
     this.bigPicture = new BrowserWindow({
       x: targetBounds.x,
@@ -366,7 +366,7 @@ export class WindowManager {
       show: false,
       webPreferences: {
         preload: path.join(__dirname, "../preload/index.mjs"),
-                                        sandbox: false,
+        sandbox: false,
       },
     });
 
@@ -377,8 +377,8 @@ export class WindowManager {
     }
 
     const bigPictureInitialHash = userPreferences?.launchToLibraryPage
-    ? "big-picture/library"
-    : "big-picture";
+      ? "big-picture/library"
+      : "big-picture";
 
     this.loadWindowURL(this.bigPicture, bigPictureInitialHash);
 
@@ -431,7 +431,7 @@ export class WindowManager {
       icon,
       webPreferences: {
         preload: path.join(__dirname, "../preload/index.mjs"),
-                                           sandbox: false,
+        sandbox: false,
       },
       show: false,
     });
@@ -538,9 +538,9 @@ export class WindowManager {
 
   public static openAuthWindow(page: AuthPage, searchParams: URLSearchParams) {
     const parentWindow =
-    this.bigPicture && !this.bigPicture.isDestroyed()
-    ? this.bigPicture
-    : this.mainWindow;
+      this.bigPicture && !this.bigPicture.isDestroyed()
+        ? this.bigPicture
+        : this.mainWindow;
 
     if (!parentWindow || parentWindow.isDestroyed()) return;
 
@@ -593,9 +593,9 @@ export class WindowManager {
     const authWindow = new BrowserWindow({
       width: this.AUTH_WINDOW_WIDTH + this.AUTH_WINDOW_BORDER * 2,
       height:
-      this.AUTH_WINDOW_HEIGHT +
-      this.AUTH_WINDOW_TITLE_BAR_HEIGHT +
-      this.AUTH_WINDOW_BORDER * 2,
+        this.AUTH_WINDOW_HEIGHT +
+        this.AUTH_WINDOW_TITLE_BAR_HEIGHT +
+        this.AUTH_WINDOW_BORDER * 2,
       parent: parentWindow,
       modal: true,
       show: false,
@@ -606,7 +606,7 @@ export class WindowManager {
       backgroundColor: "#1c1c1c",
       webPreferences: {
         preload: path.join(__dirname, "../preload/index.mjs"),
-                                         sandbox: false,
+        sandbox: false,
       },
     });
 
@@ -784,7 +784,7 @@ export class WindowManager {
       y,
       webPreferences: {
         preload: path.join(__dirname, "../preload/index.mjs"),
-                                                sandbox: false,
+        sandbox: false,
       },
     });
     this.notificationWindow.setIgnoreMouseEvents(true);
@@ -807,7 +807,7 @@ export class WindowManager {
 
     const language = userPreferences.language ?? "en";
     const position =
-    userPreferences.achievementCustomNotificationPosition ?? "top-left";
+      userPreferences.achievementCustomNotificationPosition ?? "top-left";
     const testAchievements = [
       generateAchievementCustomNotificationTest(t, language),
       generateAchievementCustomNotificationTest(t, language, {
@@ -865,7 +865,7 @@ export class WindowManager {
         },
         webPreferences: {
           preload: path.join(__dirname, "../preload/index.mjs"),
-                                             sandbox: false,
+          sandbox: false,
         },
         show: false,
       });
@@ -942,7 +942,7 @@ export class WindowManager {
       skipTaskbar: false,
       webPreferences: {
         preload: path.join(__dirname, "../preload/index.mjs"),
-                                                sandbox: false,
+        sandbox: false,
       },
       show: false,
     });
@@ -1010,8 +1010,8 @@ export class WindowManager {
 
     if (process.platform === "darwin") {
       const macIcon = nativeImage
-      .createFromPath(trayIcon)
-      .resize({ width: 24, height: 24 });
+        .createFromPath(trayIcon)
+        .resize({ width: 24, height: 24 });
       tray = new Tray(macIcon);
     } else {
       tray = new Tray(trayIcon);
@@ -1019,29 +1019,29 @@ export class WindowManager {
 
     const updateSystemTray = async () => {
       const games = await gamesSublevel
-      .values()
-      .all()
-      .then((games) => {
-        const filteredGames = games.filter(
-          (game) =>
-          !game.isDeleted && game.executablePath && game.lastTimePlayed
-        );
+        .values()
+        .all()
+        .then((games) => {
+          const filteredGames = games.filter(
+            (game) =>
+              !game.isDeleted && game.executablePath && game.lastTimePlayed
+          );
 
-        const sortedGames = orderBy(filteredGames, "lastTimePlayed", "desc");
+          const sortedGames = orderBy(filteredGames, "lastTimePlayed", "desc");
 
-        return slice(sortedGames, 0, 6);
-      });
+          return slice(sortedGames, 0, 6);
+        });
 
       const recentlyPlayedGames: Array<MenuItemConstructorOptions | MenuItem> =
-      games.map(({ title, executablePath }) => ({
-        label: title.length > 18 ? `${title.slice(0, 18)}…` : title,
-                                                type: "normal",
-                                                click: async () => {
-                                                  if (!executablePath) return;
+        games.map(({ title, executablePath }) => ({
+          label: title.length > 18 ? `${title.slice(0, 18)}…` : title,
+          type: "normal",
+          click: async () => {
+            if (!executablePath) return;
 
-                                                  shell.openPath(executablePath);
-                                                },
-      }));
+            shell.openPath(executablePath);
+          },
+        }));
 
       const contextMenu = Menu.buildFromTemplate([
         {
