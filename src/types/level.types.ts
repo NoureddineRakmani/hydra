@@ -116,6 +116,7 @@ export interface GameAchievement {
   unlockedAchievements: UnlockedAchievement[];
   updatedAt: number | undefined;
   language: string | undefined;
+  catalogueValidator?: string;
 }
 
 export type AchievementCustomNotificationPosition =
@@ -151,6 +152,8 @@ export interface UserPreferences {
   premiumizeApiToken?: string | null;
   allDebridApiToken?: string | null;
   torBoxApiToken?: string | null;
+  retroAchievementsWebApiKey?: string | null;
+  retroAchievementsUsername?: string | null;
   preferQuitInsteadOfHiding?: boolean;
   runAtStartup?: boolean;
   startMinimized?: boolean;
@@ -182,11 +185,17 @@ export interface UserPreferences {
   bigPictureDiagnosticsEnabled?: boolean;
   bigPictureDiagnosticsPosition?: BigPictureDiagnosticsPosition;
   maxDownloadSpeedBytesPerSecond?: number | null;
+  torrentNetworkInterface?: string | null;
   defaultProtonPath?: string | null;
   autoRunMangohud?: boolean;
   autoRunGamemode?: boolean;
   hideClassicsBookmark?: boolean;
   classicsUseHeroLayout?: boolean;
+}
+
+export interface NetworkInterface {
+  name: string;
+  addresses: string[];
 }
 
 export interface ScreenState {
